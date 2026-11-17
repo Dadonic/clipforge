@@ -1,0 +1,43 @@
+# Production-style stack: web API + separate video worker + PostgreSQL. One shared /data volume.
+#   cp .env.example .env   (set SECRET_KEY, optionally LLM_API_KEY)
+#   docker compose up -d --build
+# For a single small box, `docker compose up -d web db` with EMBEDDED_WORKER=true also works.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clipforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clipforge}
+      POSTGRES_DB: clipforge
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      interval: 5s
+      retries: 10
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://clipforge:${POSTGRES_PASSWORD:-clipforge}@db/clipforge
+      CLIPFORGE_DATA_DIR: /data
+      EMBEDDED_WORKER: "false"
+    volumes: [data:/data]
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://clipforge:${POSTGRES_PASSWORD:-clipforge}@db/clipforge
+      CLIPFORGE_DATA_DIR: /data
+    command: ["python", "-m", "app.worker"]
+    volumes: [data:/data]
+    depends_on:
+      db: {condition: service_healthy}
+volumes:
+  data:
+  pgdata:

@@ -1,0 +1,36 @@
+{
+  "name": "GTA 6",
+  "description": "Content profile for Grand Theft Auto VI livestreams. Every list here is editable; nothing is hidden in code.",
+  "default_hashtags": ["#gta6", "#gtavi", "#gaming", "#gtaclips"],
+  "categories": {
+    "npc_interaction": {"label": "Funny NPC interaction", "weight": 1.0,
+      "keywords": ["npc", "pedestrian", "this guy", "this dude", "this lady", "he said", "she said", "talking to me", "why is he", "why is she", "bro just", "random guy", "the dog", "gator", "alligator"]},
+    "physics": {"label": "Unexpected physics", "weight": 1.0,
+      "keywords": ["physics", "ragdoll", "flew", "flying", "launched", "glitch", "bug", "bugged", "clipped through", "bounced", "flipped", "how did", "that's not possible"]},
+    "driving": {"label": "Crazy driving moment", "weight": 0.9,
+      "keywords": ["drift", "crash", "crashed", "car", "bike", "truck", "boat", "jet ski", "plane", "helicopter", "jump", "ramp", "speed", "brakes", "highway", "wrong way", "ran over"]},
+    "police": {"label": "Police chase / wanted level", "weight": 0.9,
+      "keywords": ["cops", "police", "wanted", "stars", "five stars", "swat", "chase", "arrested", "busted", "helicopter is", "they're on me"]},
+    "discovery": {"label": "Discovery / detail", "weight": 0.8,
+      "keywords": ["look at this", "look at that", "detail", "easter egg", "secret", "hidden", "found", "wait what is", "you can actually", "i didn't know", "they added", "that's crazy detail"]},
+    "fail": {"label": "Gameplay fail", "weight": 0.9,
+      "keywords": ["i died", "i'm dead", "wasted", "fell", "missed", "failed", "mission failed", "i messed up", "my bad", "oops", "why did i", "blew up", "exploded"]},
+    "reaction": {"label": "Streamer reaction", "weight": 1.0,
+      "keywords": ["no way", "what the", "oh my god", "oh my gosh", "omg", "bro", "yo", "are you kidding", "are you serious", "i can't", "nah", "hell nah", "what just happened", "did you see that", "chat did you", "let's go", "holy", "wait wait", "hold on", "what was that"]},
+    "commentary": {"label": "Funny commentary", "weight": 0.7,
+      "keywords": ["imagine", "the way", "the fact that", "this game", "rockstar", "ten years", "worth the wait", "better than", "gta 5", "real life", "florida", "vice city", "leonida"]}
+  },
+  "laughter_words": ["haha", "hahaha", "lol", "lmao", "lmfao", "dying", "i'm crying", "crying", "dead", "hilarious", "so funny", "that's funny"],
+  "intensity_words": ["crazy", "insane", "wild", "unbelievable", "impossible", "never", "ever", "literally", "actually", "best", "worst", "first time"],
+  "weak_openers": ["and", "but", "so", "because", "or", "which", "then", "also", "anyway", "like"],
+  "chat_hype_tokens": ["lul", "kekw", "omegalul", "lmao", "lmfao", "lol", "pog", "pogchamp", "clip", "clip it", "clip that", "w", "wtf", "omg", "holy", "no way", "💀", "😂", "🤣"],
+  "policy": {
+    "note": "Flags never auto-reject a clip; they block approval until a human reviews and clears them.",
+    "spoiler_keywords": ["the ending", "ending of the game", "ending scene", "final mission", "last mission", "credits", "epilogue", "dies", "died in the story", "killed off", "betray", "betrayal", "plot twist", "cutscene", "spoiler", "the twist", "final boss", "turns out", "was the one who"],
+    "violence_keywords": ["headshot", "blood", "bloody", "massacre", "slaughter", "execute", "execution", "killing spree", "shoot them all", "gore", "stabbed", "torture", "blew his head"],
+    "strong_language": ["fuck", "fucking", "motherfucker", "bitch", "shit"],
+    "violence_early_seconds": 7,
+    "flag_possible_cinematic": true,
+    "cinematic_min_scene_cuts": 3
+  }
+}

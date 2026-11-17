@@ -1,0 +1,15 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+sqlalchemy>=2.0
+python-multipart>=0.0.9
+pyjwt>=2.8
+httpx>=0.27
+numpy>=1.26
+scipy>=1.11
+opencv-python-headless>=4.9
+faster-whisper>=1.0
+psycopg2-binary>=2.9
+# optional extras
+# sherpa-onnx>=1.10      # alternative local speech model (see scripts/get_models.sh)
+# boto3>=1.34            # S3 / Cloudflare R2 storage for rendered clips
+# pytest>=8              # to run backend/tests
