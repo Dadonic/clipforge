@@ -77,6 +77,13 @@ class Campaign(Base):
     require_attribution = Column(Boolean, default=True)
     notes = Column(Text, default="")
     preset = Column(JSONText, default=dict)              # layout / caption defaults for this campaign
+    # rules that real campaign briefs carry (added in schema v2)
+    min_views = Column(Integer, default=0)               # a clip earns nothing below this many views
+    min_tier1_pct = Column(Float)                        # required share of viewers in the campaign's listed countries
+    submit_within_min = Column(Integer)                  # submit the link within N minutes of posting
+    keep_live_days = Column(Integer)                     # clip must stay up this long
+    cta_onscreen = Column(String(200), default="")       # text card shown at the end of every clip
+    auto_hook = Column(Boolean, default=True)            # write an opening hook line automatically
     created_at = Column(DateTime, default=now)
 
 
@@ -187,6 +194,7 @@ class Clip(Base):
     rendered_hash = Column(String(40), default="")
     out_meta = Column(JSONText, default=dict)
     compliance = Column(JSONText)
+    category = Column(String(60), default="")            # moment type, used to learn what performs
     exported_at = Column(DateTime)
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
@@ -207,6 +215,7 @@ class Submission(Base):
     payment_date = Column(DateTime)
     submitted_at = Column(DateTime, default=now)
     notes = Column(Text, default="")
+    tier1_pct = Column(Float)                            # audience share in required countries, from platform analytics
 
 
 class Snapshot(Base):
@@ -230,23 +239,29 @@ class Activity(Base):
 
 
 # --- migrations -------------------------------------------------------------
-# Each entry runs once, in order. Add new statements at the end; never edit old ones.
-MIGRATIONS: list[str] = [
-    # 1: initial schema is created by create_all below
+# New tables are created by create_all. New columns on existing tables are listed here and added only when
+# missing, so the same code upgrades an old database and starts a fresh one. Append; never edit old entries.
+_TRUE = "1" if _is_sqlite else "TRUE"
+COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("campaigns", "min_views", "INTEGER DEFAULT 0"),
+    ("campaigns", "min_tier1_pct", "FLOAT"),
+    ("campaigns", "submit_within_min", "INTEGER"),
+    ("campaigns", "keep_live_days", "INTEGER"),
+    ("campaigns", "cta_onscreen", "VARCHAR(200) DEFAULT ''"),
+    ("campaigns", "auto_hook", f"BOOLEAN DEFAULT {_TRUE}"),
+    ("clips", "category", "VARCHAR(60) DEFAULT ''"),
+    ("submissions", "tier1_pct", "FLOAT"),
 ]
 
 
 def init_db() -> None:
+    from sqlalchemy import inspect
     Base.metadata.create_all(engine)
+    insp = inspect(engine)
     with engine.begin() as c:
-        c.execute(text("CREATE TABLE IF NOT EXISTS schema_version (v INTEGER NOT NULL)"))
-        row = c.execute(text("SELECT v FROM schema_version")).fetchone()
-        v = row[0] if row else 0
-        if row is None:
-            c.execute(text("INSERT INTO schema_version (v) VALUES (0)"))
-        for i, stmt in enumerate(MIGRATIONS[v:], start=v + 1):
-            c.execute(text(stmt))
-            c.execute(text("UPDATE schema_version SET v = :v"), {"v": i})
+        for table, col, ddl in COLUMN_MIGRATIONS:
+            if col not in {x["name"] for x in insp.get_columns(table)}:
+                c.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
 
 
 def get_db():

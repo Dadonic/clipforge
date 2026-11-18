@@ -70,7 +70,10 @@ def main():
                                         "max_budget": 500, "min_duration": 10, "max_duration": 45,
                                         "required_hashtags": ["#gta6", "#teststreamer"], "required_cta": "Watch live on kick",
                                         "approved_platforms": ["tiktok", "youtube_shorts"], "prohibited": ["giveaway"],
-                                        "require_watermark": True, "watermark_text": "@TestStreamer"}))
+                                        "require_watermark": True, "watermark_text": "@TestStreamer",
+                                        "min_views": 2000, "min_tier1_pct": 40, "submit_within_min": 30, "keep_live_days": 30,
+                                        "cta_onscreen": "Subscribe to @TestStreamer on YouTube"}))
+    check(camp["min_views"] == 2000 and camp["auto_hook"] is True, "campaign stores min-views, audience and end-card rules")
 
     print("Upload")
     size = os.path.getsize(a.video)
@@ -85,19 +88,18 @@ def main():
             blob = f.read(v["chunk_size"])
             j(c.put(f"/videos/{v['id']}/chunk", params={"offset": off}, content=blob))
             off += len(blob)
-    v = j(c.post(f"/videos/{v['id']}/complete"))
-    real = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", a.video],
-                                     capture_output=True, text=True).stdout)["format"]
-    check(v["status"] == "uploaded" and abs(v["duration"] - float(real["duration"])) < 0.5, "metadata extracted matches ffprobe",
-          f"{v['duration']:.1f}s {v['width']}x{v['height']} {v['vcodec']}/{v['acodec']}")
     vid = v["id"]
     if a.chat:
         r = j(c.post(f"/videos/{vid}/chat", files={"file": ("chat.txt", open(a.chat, "rb"))}))
         check(r["messages"] > 0, "chat log parsed", f"{r['messages']} messages")
-
-    print("Analysis")
     t0 = time.time()
-    j(c.post(f"/videos/{vid}/analyze", json={"min_duration": 10, "max_duration": 45, "use_llm": False}))
+    v = j(c.post(f"/videos/{vid}/complete", json={"analyze": True, "auto_clips": 2}))
+    real = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", a.video],
+                                     capture_output=True, text=True).stdout)["format"]
+    check(v["status"] == "analyzing" and abs(v["duration"] - float(real["duration"])) < 0.5, "metadata extracted matches ffprobe",
+          f"{v['duration']:.1f}s {v['width']}x{v['height']} {v['vcodec']}/{v['acodec']}")
+
+    print("Analysis (started automatically by the upload)")
     check(c.post(f"/videos/{vid}/analyze", json={}).status_code == 409, "duplicate analysis request refused")
     v = wait(lambda: (lambda x: x if x["status"] in ("ready", "failed") else None)(j(c.get(f"/videos/{vid}"))), 1800, "analysis")
     check(v["status"] == "ready", "analysis finished", f"{time.time() - t0:.0f}s, speech: {v['transcribe_provider']}, ranking: {v['semantic_provider']}")
@@ -133,15 +135,31 @@ def main():
         for s, e in truth["moments"]:
             h = next(h for h in top if ov({"start": s, "end": e}, h) > 0.5 * (e - s))
             check(h["start"] <= s + 1.5 and h["end"] >= e - 3.0, f"clip {h['start']:.0f}-{h['end']:.0f}s covers setup and payoff of moment {s}-{e}s")
+    print("Automatic clips")
+    autos = j(c.get("/clips", params={"video_id": vid}))
+    check(len(autos) == 2, "the top 2 highlights were turned into clips without a tap")
+    full = [j(c.get(f"/clips/{x['id']}")) for x in autos]
+    check(all(x["caption_resolved"]["hook_text"] and "TestStreamer" in x["caption_resolved"]["hook_text"] for x in full),
+          "each got an opening hook that names the streamer", full[0]["caption_resolved"]["hook_text"])
+    check(all(x["caption_resolved"]["cta_text"] == "Subscribe to @TestStreamer on YouTube" for x in full), "each got the campaign end card")
+    check(all(x["campaign_id"] == camp["id"] and x["category"] for x in full), "each carries the campaign and a moment type")
+    wait(lambda: all(j(c.get(f"/clips/{x['id']}"))["status"] == "rendered" for x in autos), 900, "auto renders")
+    rep0 = j(c.post(f"/clips/{autos[0]['id']}/check"))
+    check(rep0["ok"], "an automatic clip passes the campaign's rules untouched (hashtags, CTA, end card, credit, watermark)")
+    r = j(c.post(f"/videos/{vid}/clips/top", json={"count": 1}))
+    check(r["created"] == 1, "one-tap 'make top N' creates and renders the next best")
+    wait(lambda: j(c.get(f"/clips/{r['ids'][0]}"))["status"] == "rendered", 900, "top-N render")
+    j(c.delete(f"/clips/{r['ids'][0]}"))
     t1 = time.time()
     j(c.post(f"/videos/{vid}/analyze", json={"min_duration": 15, "max_duration": 30, "use_llm": False}))
     wait(lambda: j(c.get(f"/videos/{vid}"))["status"] == "ready", 300, "re-analysis")
     check(time.time() - t1 < 60, "re-analysis reuses cached transcript/audio (fast)", f"{time.time() - t1:.0f}s")
     hs = j(c.get(f"/videos/{vid}/highlights"))
-    check(all(15 - 0.1 <= h["end"] - h["start"] <= 30 + 0.1 for h in hs), "new duration bounds respected after re-run")
+    check(all(15 - 0.1 <= h["end"] - h["start"] <= 30 + 0.1 for h in hs if h["status"] == "suggested"), "new duration bounds respected after re-run")
+    check(sum(h["status"] == "clipped" for h in hs) == 2, "highlights already turned into clips survive a re-run")
 
     print("Clip + render")
-    clip = j(c.post(f"/highlights/{hs[0]['id']}/clip", json={"render": True}))
+    clip = j(c.post(f"/highlights/{next(h for h in hs if h['status'] == 'suggested')['id']}/clip", json={"render": True}))
     cid = clip["id"]
     clip = wait(lambda: (lambda x: x if x["status"] == "rendered" or (x["job"] and x["job"]["status"] == "failed") else None)(j(c.get(f"/clips/{cid}"))), 900, "render")
     check(clip["status"] == "rendered" and not clip["needs_render"], "clip rendered")
@@ -182,13 +200,14 @@ def main():
     print("Compliance")
     rep = j(c.post(f"/clips/{cid}/check"))
     check(rep["ok"], "a clip made from a campaign recording starts compliant (hashtags, CTA, watermark, credit pre-filled)")
-    j(c.patch(f"/clips/{cid}", json={"hashtags": ["#gaming"], "description": "", "title": "untitled", "watermark_text": ""}))
+    j(c.patch(f"/clips/{cid}", json={"hashtags": ["#gaming"], "description": "", "title": "untitled", "watermark_text": "", "caption_params": {}}))
     r = c.post(f"/clips/{cid}/approve")
     check(r.status_code == 409, "approval blocked while campaign rules fail")
     fails = {k["code"] for k in r.json()["detail"]["report"]["checks"] if k["status"] == "fail"}
-    check({"hashtags", "cta", "watermark", "attribution", "rendered"} <= fails, "each failing rule is named", ",".join(sorted(fails)))
+    check({"hashtags", "cta", "cta_card", "watermark", "attribution", "rendered"} <= fails, "each failing rule is named", ",".join(sorted(fails)))
     j(c.patch(f"/clips/{cid}", json={"title": "TestStreamer loses it", "description": "Watch live on kick giveaway",
-                                     "hashtags": ["#gta6", "#teststreamer"], "watermark_text": "@TestStreamer"}))
+                                     "hashtags": ["#gta6", "#teststreamer"], "watermark_text": "@TestStreamer",
+                                     "caption_params": {"cta_text": "Subscribe to @TestStreamer on YouTube"}}))
     j(c.post(f"/clips/{cid}/render"))
     wait(lambda: (lambda x: x["status"] == "rendered" and not x["needs_render"])(j(c.get(f"/clips/{cid}"))), 900, "render")
     rep = j(c.post(f"/clips/{cid}/check"))
@@ -197,6 +216,15 @@ def main():
     clip = j(c.post(f"/clips/{cid}/approve"))
     check(clip["status"] == "approved" and clip["compliance"]["ok"], "clip approved once every rule passes")
 
+    print("Posting kit")
+    kit = j(c.get(f"/clips/{cid}/posting"))
+    check([p["platform"] for p in kit["platforms"]] == ["tiktok", "youtube_shorts"] and kit["approved"], "posting kit lists only the campaign's platforms")
+    yt = next(p for p in kit["platforms"] if p["platform"] == "youtube_shorts")
+    check(len(yt["fields"][0]["text"]) <= 100 and "#gta6" in yt["fields"][0]["text"], "YouTube title fits 100 characters with hashtags")
+    tk = next(p for p in kit["platforms"] if p["platform"] == "tiktok")["fields"][0]["text"]
+    check("Watch live on kick" in tk and "#teststreamer" in tk and "TestStreamer loses it" in tk, "TikTok caption carries title, CTA and hashtags")
+    check(any("30 minutes" in r for r in kit["rules"]) and any("2,000" in r for r in kit["rules"]), "after-posting rules are spelled out")
+
     print("Submission + earnings")
     check(c.post("/submissions", json={"clip_id": cid, "platform": "instagram_reels", "url": "https://x.test/1"}).status_code == 409,
           "submission on a non-approved platform refused")
@@ -204,8 +232,14 @@ def main():
     url = "https://www.tiktok.com/@e2e/video/" + uuid.uuid4().hex[:10]
     s = j(c.post("/submissions", json={"clip_id": cid, "platform": "tiktok", "url": url, "views": 1000, "approved_views": 0}))
     check(c.post("/submissions", json={"clip_id": cid, "platform": "tiktok", "url": url + "/"}).status_code == 409, "the same link cannot be recorded twice")
+    check(s["blocked"] and "2,000" in s["blocked"], "under the campaign's minimum views is called out", s["blocked"])
     check(s["estimated_earnings"] == 0, "no approved views -> $0 estimated (views alone earn nothing)")
     s = j(c.patch(f"/submissions/{s['id']}", json={"views": 250000, "approved_views": 184000}))
+    check(s["blocked"] == "Audience share not recorded yet", "missing audience proof is flagged")
+    s2 = j(c.patch(f"/submissions/{s['id']}", json={"tier1_pct": 31}))
+    check(s2["estimated_earnings"] == 0 and "under the required 40%" in s2["blocked"], "audience below the campaign rule earns $0", s2["blocked"])
+    s = j(c.patch(f"/submissions/{s['id']}", json={"tier1_pct": 55}))
+    check(s["blocked"] is None, "audience above the rule clears the flag")
     check(abs(s["estimated_earnings"] - 276.0) < 0.005, "estimate = 184,000 / 1,000 x $1.50 = $276.00", f"${s['estimated_earnings']}")
     check(c.patch(f"/submissions/{s['id']}", json={"approved_views": 300000}).status_code == 400, "approved views above total views refused")
     e = j(c.get("/earnings"))
@@ -216,11 +250,15 @@ def main():
     e = j(c.get("/earnings"))
     check(e["estimated_total"] == 300.0 and e["confirmed_total"] == 290.5 and e["pending_estimated"] == 0, "after CSV: estimated $300.00, confirmed $290.50, nothing pending")
     d = j(c.get("/dashboard"))
-    check(d["clips_generated"] == 1 and d["clips_approved"] == 1 and d["videos_processed"] == 1 and d["earnings"]["approved_views"] == 200000,
+    check(d["clips_generated"] == 3 and d["clips_approved"] == 1 and d["videos_processed"] == 1 and d["earnings"]["approved_views"] == 200000,
           "dashboard reflects the real rows")
     pc = d["earnings"]["per_campaign"][0]
     check(pc["budget_used_pct"] == 60.0, "campaign budget utilisation 300/500 = 60%")
     check(c.delete(f"/clips/{cid}").status_code == 409, "clip with recorded submissions cannot be deleted by accident")
+
+    ins = j(c.get("/insights"))
+    check(ins["posts"] == 1 and ins["avg_views"] == 300000 and ins["category_boost"] == {} and not ins["enough_data"],
+          "insights count real posts and do not steer ranking on too little data")
 
     print("Isolation")
     c2 = httpx.Client(base_url=a.base + "/api", timeout=30)

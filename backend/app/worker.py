@@ -146,13 +146,21 @@ def run_analyze(job: Job, rep: Reporter) -> None:
         v.semantic_provider = meta["semantic"]
         v.cost = cost
         v.has_chat = bool(chat_sig)
-        v.analysis_settings = {k: settings.get(k) for k in ("min_duration", "max_duration", "max_highlights", "use_llm")}
+        v.analysis_settings = {k: settings.get(k) for k in ("min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips")}
         if tr.get("warning"):
             v.error = "No transcription provider available: " + tr["warning"]
         if cam and v.facecam_source != "manual":
             v.facecam, v.facecam_source = cam, "auto"
         log_activity(db, v.user_id, "analysis", f"Analysed “{v.title}”: {len(cands)} highlights found")
         db.commit()
+        n_auto = int(settings.get("auto_clips") or 0)
+        if n_auto > 0:
+            from .db import User
+            from .services import clipmaker
+            made = clipmaker.make_top_clips(db, db.get(User, v.user_id), v, n_auto)
+            if made:
+                log_activity(db, v.user_id, "auto", f"Made {len(made)} clips automatically from this recording")
+            db.commit()
 
 
 # --------------------------------------------------------------------------- render

@@ -255,3 +255,74 @@ def test_hook_text_card():
     assert ",Hook," not in captions.build_ass([], 0, 20, "pop", {}).split("[Events]")[1]
     a = {"start": 0, "end": 9, "caption_params": {"hook_text": "x"}}
     assert render.render_hash(a) != render.render_hash({**a, "caption_params": {}})
+
+
+# ---------------------------------------------------------------- v2: hooks, end card, campaign rules, learning
+def test_hook_is_grounded_and_names_streamer():
+    p = semantic.load_profile()
+    h = semantic.make_hook(["Okay, driving now.", "No way! He just jumped on the car!"], {"laugh": 0.2}, "reaction", "Tomo", p)
+    assert h.startswith("Tomo: ") and "jumped on the car" in h
+    assert semantic.make_hook([], {"laugh": 0.9}, "moment", "Tomo", p) == "Tomo can't stop laughing"
+    assert semantic.make_hook([], {}, "police", "Tomo", p) == "Tomo vs the cops in GTA 6"
+    assert "Streamer" in semantic.make_hook([], {}, "moment", "", p)
+
+
+def test_end_card_timing_and_wrap():
+    ass = captions.build_ass([], 10, 30, "pop", {"cta_text": "Subscribe to @Tomovids on YouTube", "cta_seconds": 4})
+    line = [l for l in ass.splitlines() if l.startswith("Dialogue") and ",Cta," in l]
+    assert len(line) == 1 and "0:00:16.00,0:00:20.00" in line[0] and "\\N" in line[0] and "@Tomovids" in line[0]
+    assert not [l for l in captions.build_ass([], 10, 30, "pop", {}).splitlines() if l.startswith("Dialogue") and ",Cta," in l]
+    a = {"start": 0, "end": 9, "caption_params": {"cta_text": "x"}}
+    assert render.render_hash(a) != render.render_hash({**a, "caption_params": {}})
+
+
+def test_minimum_views_rule():
+    assert compliance.estimated_earnings(1999, 2.0, 150, min_views=2000) == 0
+    assert compliance.estimated_earnings(2000, 2.0, 150, min_views=2000) == 4.0
+    assert compliance.estimated_earnings(500_000, 2.0, 150, min_views=2000) == 150
+
+
+def test_onscreen_text_counts_for_cta_and_credit():
+    v = NS(authorized=True, facecam=None)
+    camp = _camp(required_cta="@Tomovids", cta_onscreen="Subscribe to @Tomovids on YouTube", streamer="Tomo", require_watermark=False, watermark_text="")
+    bare = _clip(title="wild moment", description="", watermark_text="", caption_params={})
+    fails = {c["code"] for c in compliance.check_clip(bare, v, camp)["checks"] if c["status"] == "fail"}
+    assert {"cta", "cta_card", "attribution"} <= fails
+    good = _clip(title="wild moment", description="", watermark_text="",
+                 caption_params={"hook_text": "Tomo was NOT ready", "cta_text": "Subscribe to @Tomovids on YouTube"})
+    assert compliance.check_clip(good, v, camp)["ok"]
+
+
+def test_learned_boost_reorders_and_is_bounded():
+    words, audio = _synthetic()
+    base, _ = highlights.find_highlights(words, audio, [], [], 300.0, {"min_duration": 10, "max_duration": 40, "use_llm": False})
+    cat = base[0]["category"]
+    up, _ = highlights.find_highlights(words, audio, [], [], 300.0, {"min_duration": 10, "max_duration": 40, "use_llm": False, "category_boost": {cat: 1.15}})
+    dn, _ = highlights.find_highlights(words, audio, [], [], 300.0, {"min_duration": 10, "max_duration": 40, "use_llm": False, "category_boost": {cat: 0.85}})
+    assert dn[0]["engagement_score"] < base[0]["engagement_score"] <= up[0]["engagement_score"]
+    assert up[0]["signals"].get("learned_boost") in (1.15, None) and dn[0]["signals"]["learned_boost"] == 0.85
+    assert base[0]["signals"]["hook_text"]
+
+
+def test_migrations_upgrade_old_database_in_place(tmp_path):
+    import sqlite3
+    from sqlalchemy import create_engine, inspect, text
+    from app import db as dbm
+    old = tmp_path / "old.db"
+    con = sqlite3.connect(old)
+    con.execute("CREATE TABLE campaigns (id INTEGER PRIMARY KEY, user_id INTEGER, name VARCHAR(200))")
+    con.execute("CREATE TABLE clips (id INTEGER PRIMARY KEY, title VARCHAR(300))")
+    con.execute("CREATE TABLE submissions (id INTEGER PRIMARY KEY, url VARCHAR(600))")
+    con.execute("INSERT INTO campaigns (id, user_id, name) VALUES (1, 1, 'kept')")
+    con.commit(); con.close()
+    eng = create_engine(f"sqlite:///{old}")
+    for _ in range(2):          # second pass must be a no-op
+        insp = inspect(eng)
+        with eng.begin() as c:
+            for table, col, ddl in dbm.COLUMN_MIGRATIONS:
+                if col not in {x["name"] for x in insp.get_columns(table)}:
+                    c.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+    with eng.connect() as c:
+        row = c.execute(text("SELECT name, min_views, auto_hook, cta_onscreen FROM campaigns")).fetchone()
+    assert tuple(row) == ("kept", 0, 1, "")
+    assert {m[0] for m in dbm.COLUMN_MIGRATIONS} <= {"campaigns", "clips", "submissions"}

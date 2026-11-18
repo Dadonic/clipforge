@@ -39,6 +39,15 @@ function drawFrame(ctx, video, clip, small) {
     ctx.fillStyle = "#fff"; ctx.fillRect((W - bw) / 2, hy - lh * ls.length / 2 - 8, bw, lh * ls.length + 16);
     ctx.fillStyle = "#000"; ls.forEach((l, i) => ctx.fillText(l, W / 2, hy + (i - (ls.length - 1) / 2) * lh, W - 40));
   }
+  const cdur = clip.end - clip.start;
+  if (cp.cta_text && t >= cdur - (cp.cta_seconds || 3) && t <= cdur + 0.2) {
+    const hs = 28; ctx.font = `700 ${hs}px "cf-${cp.font}", Inter, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    let ls = [cp.cta_text.slice(0, 80)];
+    if (ls[0].length > 26) { const x = ls[0], mid = x.length / 2; let cut = -1, bd = 1e9; for (let i = 0; i < x.length; i++) if (x[i] === " " && Math.abs(i - mid) < bd) { bd = Math.abs(i - mid); cut = i; } if (cut > 0) ls = [x.slice(0, cut), x.slice(cut + 1)]; }
+    const hy = H * (cp.cta_y || 0.84), lh = hs * 1.25, bw = Math.min(W - 20, Math.max(...ls.map(l => ctx.measureText(l).width)) + 26);
+    ctx.fillStyle = "#FFE600"; ctx.fillRect((W - bw) / 2, hy - lh * ls.length / 2 - 7, bw, lh * ls.length + 14);
+    ctx.fillStyle = "#000"; ls.forEach((l, i) => ctx.fillText(l, W / 2, hy + (i - (ls.length - 1) / 2) * lh, W - 40));
+  }
   if (!cp.enabled) return;
   const cue = clip.cues.find(c => t >= c.s && t < c.e);
   if (!cue) return;
@@ -132,7 +141,32 @@ function SubmissionForm({ clip, sys, campaigns, onClose }) {
       <button class="btn primary right" onClick=${save}>Save submission</button></div><//>`;
 }
 
-const TABS = [["cut", "Cut"], ["layout", "Layout"], ["captions", "Captions"], ["details", "Details"], ["assist", "Assistant"], ["check", "Compliance"]];
+const TABS = [["cut", "Cut"], ["layout", "Layout"], ["captions", "Captions"], ["details", "Details"], ["assist", "Assistant"], ["check", "Compliance"], ["post", "Post"]];
+
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast("Copied"); }
+  catch (e) { const a = document.createElement("textarea"); a.value = t; document.body.appendChild(a); a.select(); try { document.execCommand("copy"); toast("Copied"); } catch (x) { toast("Select the text and copy it manually", true); } a.remove(); }
+}
+
+/* Everything needed to post an approved clip: ready text per platform, the file, and where to record the link. */
+function PostKit({ clip, onRecord }) {
+  const [kit, setKit] = useState(null);
+  useEffect(() => { api(`/clips/${clip.id}/posting`).then(setKit).catch(fail); }, [clip.id, clip.title, clip.description, (clip.hashtags || []).join(" "), clip.campaign_id, clip.status, clip.submissions]);
+  if (!kit) return html`<${Loading} />`;
+  return html`<div class="col">
+    ${!kit.approved && html`<div class="note warn">Approve the clip first. The text below is ready, but only approved clips can be recorded as posted.</div>`}
+    <div class="row wrap">${clip.has_output && html`<a class="btn primary" href=${`/api/clips/${clip.id}/file?download=1`}>1. Download MP4</a>`}
+      ${kit.campaign_url && html`<a class="btn" href=${kit.campaign_url} target="_blank" rel="noopener">Open campaign page <${Icon} n="ext" /></a>`}</div>
+    <h3>2. Post it</h3>
+    ${kit.platforms.map(p => html`<div class="card" style="background:var(--bg2)"><div class="row" style="margin-bottom:8px"><b class="grow">${p.name}</b>${p.posted && html`<span class="pill ok">Recorded</span>`}
+        ${p.upload_url && html`<a class="btn sm" href=${p.upload_url} target="_blank" rel="noopener">Open upload <${Icon} n="ext" /></a>`}</div>
+      ${p.fields.map(f => html`<div style="margin-bottom:8px"><div class="row"><span class="tiny dim grow">${f.label} \u00b7 ${f.text.length} characters</span><button class="btn sm" onClick=${() => copyText(f.text)}>Copy</button></div>
+        <div class="small" style="margin-top:3px;word-break:break-word">${f.text}</div></div>`)}</div>`)}
+    <h3>3. Record the link here${kit.campaign_name ? ", and submit it on the campaign page" : ""}</h3>
+    ${kit.rules.length > 0 && html`<div class="note">${kit.rules.map(r => html`<div>\u2022 ${r}</div>`)}</div>`}
+    <button class="btn" disabled=${!kit.approved} onClick=${onRecord}>Record a posted link${clip.submissions ? ` (${clip.submissions} recorded)` : ""}</button>
+    <p class="hint">ClipForge does not post for you. TikTok, Instagram and YouTube only allow automatic posting from apps they have reviewed and approved.</p></div>`;
+}
 
 export function Studio({ id, sys }) {
   const [clip, setClip] = useState(null);
@@ -225,7 +259,10 @@ export function Studio({ id, sys }) {
       <div class="fields"><${Field} wide label="Hook text (shown big at the top for the first seconds)" hint="One short line that makes someone stop scrolling. Describe what really happens in the clip.">
           <input maxlength="90" value=${cp.hook_text || ""} onInput=${e => setCP("hook_text", e.target.value)} placeholder="e.g. He did NOT expect the NPC to do this" /><//>
         <${Field} label=${`Hook stays for ${cp.hook_seconds || 3}s`}><input type="range" min="1" max="8" step="0.5" value=${cp.hook_seconds || 3} onInput=${e => setCP("hook_seconds", +e.target.value)} /><//>
-        <${Field} label="Hook position"><input type="range" min="0.06" max="0.5" step="0.01" value=${cp.hook_y || 0.16} onInput=${e => setCP("hook_y", +e.target.value)} /><//></div>
+        <${Field} label="Hook position"><input type="range" min="0.06" max="0.5" step="0.01" value=${cp.hook_y || 0.16} onInput=${e => setCP("hook_y", +e.target.value)} /><//>
+        <${Field} wide label="End-card text (last seconds of the clip)" hint="Where viewers should go next. Filled in from the campaign if it sets one.">
+          <input maxlength="80" value=${cp.cta_text || ""} onInput=${e => setCP("cta_text", e.target.value)} placeholder="e.g. Subscribe to @Tomovids on YouTube" /><//>
+        <${Field} label=${`End card shows for ${cp.cta_seconds || 3}s`}><input type="range" min="1" max="8" step="0.5" value=${cp.cta_seconds || 3} onInput=${e => setCP("cta_seconds", +e.target.value)} /><//></div>
       <label class="f inline"><input type="checkbox" checked=${cp.enabled} onChange=${e => setCP("enabled", e.target.checked)} /><span>Burn captions into the video</span></label>
       <div class="fields">
         <${Field} label="Style"><select value=${clip.caption_style} onChange=${e => edit({ caption_style: e.target.value, caption_params: { ...(clip.caption_params || {}), size: null, max_words: null, uppercase: null, bg: null } })}>${Object.entries(sys.caption_styles).map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select><//>
@@ -269,6 +306,7 @@ export function Studio({ id, sys }) {
           <div class=${"note" + (clip.compliance.ok ? "" : " warn")}>${clip.compliance.ok ? "All measurable rules pass. The campaign owner and the platform still make the final call." : `${clip.compliance.fails} rule${clip.compliance.fails === 1 ? "" : "s"} failing. Fix them, then check again.`}</div>`
         : html`<p class="muted small">${camp ? `Checks this clip against “${camp.name}” rules plus format and content flags.` : "No campaign assigned: only format and content flags are checked."}</p>`}
       <button class="btn" onClick=${check}>Run compliance check</button></div>`,
+    post: () => html`<${PostKit} clip=${clip} onRecord=${() => setSubOpen(true)} />`,
   };
 
   return html`

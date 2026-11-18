@@ -22,14 +22,17 @@ function Row({ s, onSaved }) {
   const cur = e || s;
   const set = (k, v) => setE({ ...cur, [k]: v });
   const save = async () => {
-    try { await api(`/submissions/${s.id}`, { method: "PATCH", body: { views: +cur.views, approved_views: +cur.approved_views, confirmed_earnings: +cur.confirmed_earnings, payment_status: cur.payment_status, payment_date: dateOnly(cur.payment_date) || null } });
+    try { await api(`/submissions/${s.id}`, { method: "PATCH", body: { views: +cur.views, approved_views: +cur.approved_views, confirmed_earnings: +cur.confirmed_earnings, payment_status: cur.payment_status, payment_date: dateOnly(cur.payment_date) || null,
+        ...(cur.tier1_pct === "" || cur.tier1_pct == null ? {} : { tier1_pct: +cur.tier1_pct }) } });
       setE(null); toast("Updated"); onSaved(); } catch (x) { fail(x); }
   };
   const del = async () => { if (!confirm("Delete this submission and its history?")) return; try { await api(`/submissions/${s.id}`, { method: "DELETE" }); onSaved(); } catch (x) { fail(x); } };
   return html`<tr>
-    <td style="max-width:220px"><div class="trunc" style="font-weight:500">${s.clip_title || "(clip deleted)"}</div><div class="small muted trunc">${s.campaign_name || "No campaign"} · ${s.platform.replace(/_/g, " ")} · <a href=${s.url} target="_blank" rel="noopener">link</a></div></td>
+    <td style="max-width:220px"><div class="trunc" style="font-weight:500">${s.clip_title || "(clip deleted)"}</div><div class="small muted trunc">${s.campaign_name || "No campaign"} · ${s.platform.replace(/_/g, " ")} · <a href=${s.url} target="_blank" rel="noopener">link</a></div>
+      ${s.blocked && html`<div class="tiny" style="color:var(--warn);margin-top:2px">${s.blocked}</div>`}</td>
     <td class="n"><input type="number" min="0" style="width:92px;text-align:right" value=${cur.views} onInput=${x => set("views", x.target.value)} aria-label="Views" /></td>
     <td class="n"><input type="number" min="0" style="width:92px;text-align:right" value=${cur.approved_views} onInput=${x => set("approved_views", x.target.value)} aria-label="Approved views" /></td>
+    <td class="n">${s.needs_tier1 ? html`<input type="number" min="0" max="100" style="width:70px;text-align:right" value=${cur.tier1_pct ?? ""} placeholder="%" onInput=${x => set("tier1_pct", x.target.value)} aria-label="Audience share in required countries, percent" />` : html`<span class="dim">\u2014</span>`}</td>
     <td class="n small muted">${money(s.payout_per_1k)}</td>
     <td class="n" style="color:var(--est)">${money(s.estimated_earnings)}</td>
     <td class="n"><input type="number" min="0" step="0.01" style="width:84px;text-align:right" value=${cur.confirmed_earnings} onInput=${x => set("confirmed_earnings", x.target.value)} aria-label="Confirmed earnings" /></td>
@@ -39,12 +42,12 @@ function Row({ s, onSaved }) {
 }
 
 export function Earnings({ sys }) {
-  const { data, error, loading, reload } = useLoad(() => Promise.all([api("/earnings"), api("/submissions")]), []);
+  const { data, error, loading, reload } = useLoad(() => Promise.all([api("/earnings"), api("/submissions"), api("/insights")]), []);
   const [add, setAdd] = useState(false);
   const [imp, setImp] = useState(null);
   if ((loading && !data) || !sys) return html`<${Loading} />`;
   if (error && !data) return html`<${ErrorBox} error=${error} retry=${reload} />`;
-  const [e, subs] = data;
+  const [e, subs, ins] = data;
   const csv = async ev => { const f = ev.target.files[0]; if (!f) return; const fd = new FormData(); fd.append("file", f);
     try { const r = await api("/submissions/import-csv", { method: "POST", body: fd, raw: true }); setImp(r); reload(); } catch (x) { fail(x); } ev.target.value = ""; };
   const series = [{ key: "confirmed", color: "#3ddc97", name: "Confirmed (paid)" }, { key: "estimated", color: "#8ea0ff", name: "Estimated growth" }];
@@ -77,9 +80,15 @@ export function Earnings({ sys }) {
         : html`<div class="empty">No campaigns with activity yet.</div>`}</div>
   </div>
 
+  <div class="card" style="margin-bottom:14px"><div class="row wrap" style="margin-bottom:10px"><h2 class="grow">What's working</h2><span class="hint">${ins.posts} posted clip${ins.posts === 1 ? "" : "s"} recorded \u00b7 average ${int(ins.avg_views)} views</span></div>
+    ${ins.posts < 2 ? html`<p class="muted small">After you record a few posted clips with their views, this shows which kinds of moments, lengths, layouts and caption styles get you the most views, and the ranking starts leaning towards them.</p>`
+      : html`<div class="grid g3">${[["Moment type", ins.by_category], ["Clip length", ins.by_length], ["Hook text", ins.by_hook], ["Layout", ins.by_layout], ["Caption style", ins.by_caption_style], ["Platform", ins.by_platform]].map(([t, rows]) => html`<div><h3 style="margin-bottom:6px">${t}</h3>
+          ${rows.map(r => html`<div class="row small" style="margin-bottom:3px"><span class="grow trunc">${String(r.label).replace(/_/g, " ")}</span><span class="dim num">${r.posts}\u00d7</span><span class="num" style="min-width:64px;text-align:right">${compact(r.avg_views)} avg</span></div>`)}</div>`)}</div>
+        <p class="hint" style="margin-top:10px">${ins.note} ${ins.enough_data ? (Object.keys(ins.category_boost).length ? "Highlight ranking now nudges moment types by up to 15% based on this." : "") : "Ranking starts using this after 5 posted clips."}</p>`}</div>
+
   <div class="card flush"><div class="row" style="padding:14px 16px;border-bottom:1px solid var(--line)"><h2 class="grow">Submissions</h2><span class="hint">Edit numbers inline as the campaign reports them. CSV import matches rows by post link.</span></div>
-    ${subs.length ? html`<div class="scrollx"><table class="tbl"><thead><tr><th>Clip</th><th class="n">Views</th><th class="n">Approved views</th><th class="n">Rate/1k</th><th class="n">Estimated</th><th class="n">Confirmed $</th><th>Payment</th><th>Paid on</th><th></th></tr></thead>
-        <tbody>${subs.map(s => html`<${Row} key=${s.id + ":" + s.views + ":" + s.approved_views + ":" + s.payment_status + ":" + s.confirmed_earnings} s=${s} onSaved=${reload} />`)}</tbody></table></div>`
+    ${subs.length ? html`<div class="scrollx"><table class="tbl"><thead><tr><th>Clip</th><th class="n">Views</th><th class="n">Approved views</th><th class="n">Audience %</th><th class="n">Rate/1k</th><th class="n">Estimated</th><th class="n">Confirmed $</th><th>Payment</th><th>Paid on</th><th></th></tr></thead>
+        <tbody>${subs.map(s => html`<${Row} key=${s.id + ":" + s.views + ":" + s.approved_views + ":" + s.payment_status + ":" + s.confirmed_earnings + ":" + s.tier1_pct} s=${s} onSaved=${reload} />`)}</tbody></table></div>`
       : html`<div class="empty"><b>No submissions recorded</b>After you post an approved clip and submit it on the campaign page, record the link here. Earnings are never assumed.<div><button class="btn primary" onClick=${() => setAdd(true)}>Record a submission</button></div></div>`}</div>
   ${add && html`<${AddSubmission} sys=${sys} onClose=${ok => { setAdd(false); ok && reload(); }} />`}`;
 }

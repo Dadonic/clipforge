@@ -17,6 +17,20 @@ campaigns on Whop Content Rewards.
    A clip cannot be approved while any rule fails.
 7. **Track** – record each posted link, update views / approved views (inline or CSV import), see estimated vs confirmed earnings.
 
+## Automation added in v2
+
+- **Upload and walk away.** Tick "Analyse as soon as it uploads" and choose how many clips to make; the recording is
+  analysed and the top moments are cut, captioned and rendered with the campaign's template, ready for review.
+- **Hook text and end card.** Each clip gets an opening line built from what was said or measured (it names the
+  streamer) and, if the campaign sets one, an end card such as "Subscribe to @name on YouTube". Both are editable.
+- **Rules from real briefs.** Campaigns hold minimum views before a clip earns, a required audience share, a
+  submit-within deadline and a keep-live period. Earnings estimates and warnings follow those rules.
+- **Post tab.** For an approved clip: download, ready-to-copy text per allowed platform, the after-posting rules, and
+  the form to record the link. ClipForge does not post for you; the platforms only allow that from apps they have reviewed.
+- **What's working.** Earnings shows average views by moment type, length, layout, caption style, hook and platform
+  from your own recorded posts. After 5 posts the ranking nudges moment types by at most 15% in either direction.
+- **Upgrades keep your data.** New columns are added to an existing database at start-up.
+
 ## Run it
 
 ### Docker (recommended on a VPS)
@@ -90,10 +104,10 @@ video files; it does not download from Twitch, Kick or YouTube pages.
 ## Testing
 
 ```bash
-cd backend && python -m pytest -q                       # 45 unit tests, ~4 s
+cd backend && python -m pytest -q                       # 52 unit tests, ~4 s
 python scripts/make_test_stream.py --video any.mp4 --voice voice.onnx --out test_stream.mp4   # needs piper-tts
 python scripts/e2e.py --base http://127.0.0.1:8000 --video test_stream.mp4 \
-       --truth test_stream.truth.json --chat test_stream.chat.txt                              # 54 checks
+       --truth test_stream.truth.json --chat test_stream.chat.txt                              # 71 checks
 ```
 
 `e2e.py` works with any real recording too (omit `--truth`); it then checks everything except the ranking ground truth.

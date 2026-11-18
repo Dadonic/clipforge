@@ -19,7 +19,8 @@ STYLES = {
 DEFAULT_PARAMS = {"enabled": True, "font": "Poppins Bold", "size": None, "y": 0.70, "color": "#FFFFFF",
                   "accent": "#FFE600", "keyword_color": "#3DFF8B", "outline": 7, "outline_color": "#000000",
                   "bg": None, "uppercase": None, "max_words": None, "highlight_keywords": True,
-                  "hook_text": "", "hook_seconds": 3.0, "hook_y": 0.16}
+                  "hook_text": "", "hook_seconds": 3.0, "hook_y": 0.16,
+                  "cta_text": "", "cta_seconds": 3.0, "cta_y": 0.84}
 
 
 @lru_cache(maxsize=1)
@@ -112,6 +113,17 @@ def _esc(s: str) -> str:
     return s.replace("\\", "").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
+def _wrap2(txt: str, limit: int) -> str:
+    """Break a long line into two balanced lines at the space nearest the middle."""
+    if len(txt) <= limit:
+        return txt
+    mid, sp = len(txt) // 2, [i for i, ch in enumerate(txt) if ch == " "]
+    if not sp:
+        return txt
+    cut = min(sp, key=lambda i: abs(i - mid))
+    return txt[:cut] + "\\N" + txt[cut + 1:]
+
+
 def build_ass(words: list[dict], start: float, end: float, style: str, params: dict | None,
               watermark: str = "", watermark_pos: str = "top") -> str:
     p = resolve(style, params)
@@ -136,6 +148,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,{f['ass_name']},{int(p['size'])},{primary},{primary},{outline_c if not p['bg'] else back},{back},{bold},0,0,0,100,100,0,0,{border_style},{outline},{0 if p['bg'] else 2},5,60,60,0,1
 Style: Hook,{f['ass_name']},64,&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,{bold},0,0,0,100,100,0,0,3,18,0,5,70,70,0,1
+Style: Cta,{f['ass_name']},56,&H00000000,&H00000000,&H0000E6FF,&H0000E6FF,{bold},0,0,0,100,100,0,0,3,16,0,5,70,70,0,1
 Style: WM,{f['ass_name']},44,&H59FFFFFF,&H59FFFFFF,&H73000000,&H00000000,{bold},0,0,0,100,100,1,0,1,2,0,8,40,40,40,1
 
 [Events]
@@ -185,6 +198,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 cut = min(sp, key=lambda i: abs(i - mid))
                 txt = txt[:cut] + "\\N" + txt[cut + 1:]
         lines.append(f"Dialogue: 2,{_ts(0)},{_ts(hs)},Hook,,0,0,0,,{{\\an5\\pos({W // 2},{hy})\\fad(120,200)}}{txt}")
+    cta = str(p.get("cta_text") or "").strip()
+    if cta:
+        # end card: tells the viewer where to go next, over the last seconds of the clip
+        dur = end - start
+        cs = max(1.0, min(float(p.get("cta_seconds") or 3.0), dur))
+        cy2 = int(H * float(p.get("cta_y") or 0.84))
+        ctxt = _wrap2(_esc(cta[:80]), 26)
+        lines.append(f"Dialogue: 2,{_ts(dur - cs)},{_ts(dur)},Cta,,0,0,0,,{{\\an5\\pos({W // 2},{cy2})\\fad(150,0)}}{ctxt}")
     if watermark.strip():
         an, y = {"top": (8, 90), "bottom": (2, H - 90), "middle": (5, H // 2)}.get(watermark_pos, (8, 90))
         lines.append(f"Dialogue: 0,{_ts(0)},{_ts(end - start + 1)},WM,,0,0,0,,{{\\an{an}\\pos({W // 2},{y})}}{_esc(watermark.strip())}")

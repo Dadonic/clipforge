@@ -15,7 +15,7 @@ from starlette.background import BackgroundTask
 from .. import config
 from ..auth import current_user
 from ..db import Campaign, Clip, Highlight, Job, Submission, User, Video, get_db, log_activity, now, to_dict
-from ..services import captions, compliance, render, semantic, storage
+from ..services import captions, clipmaker, compliance, render, semantic, storage
 
 router = APIRouter(prefix="/api", tags=["clips"])
 
@@ -25,13 +25,6 @@ def own_clip(db: Session, user: User, cid: int) -> Clip:
     if not c or c.user_id != user.id:
         raise HTTPException(404, "Clip not found")
     return c
-
-
-def _words_for(video_id: int, start: float, end: float) -> list[dict]:
-    p = config.WORK_DIR / str(video_id) / "transcript.json"
-    if not p.exists():
-        return []
-    return [w for w in json.loads(p.read_text())["words"] if w["e"] > start and w["s"] < end]
 
 
 def clip_out(db: Session, c: Clip, full: bool = False) -> dict:
@@ -56,42 +49,15 @@ def clip_out(db: Session, c: Clip, full: bool = False) -> dict:
     return d
 
 
-def _new_clip(db, user, v: Video, start: float, end: float, h: Highlight | None, campaign_id: int | None) -> Clip:
-    if not v.duration or v.status not in ("ready", "uploaded", "analyzing"):
-        raise HTTPException(409, "Recording is not ready")
-    start, end = max(0.0, float(start)), min(float(end), v.duration)
-    if end - start < 1:
-        raise HTTPException(400, "Clip must be at least 1 second long")
-    camp = db.get(Campaign, campaign_id or v.campaign_id) if (campaign_id or v.campaign_id) else None
-    if camp and camp.user_id != user.id:
-        camp = None
-    preset = (camp.preset if camp else None) or {}
-    us = user.settings or {}
-    tags = list(h.hashtags or []) if h else list(semantic.load_profile()["default_hashtags"])
-    for t in (camp.required_hashtags if camp else []) or []:
-        if t.lower() not in [x.lower() for x in tags]:
-            tags.append(t)
-    c = Clip(user_id=user.id, video_id=v.id, highlight_id=h.id if h else None, campaign_id=camp.id if camp else None,
-             title=(h.title if h else f"{v.title} clip")[:300], description=(camp.required_cta if camp else "") or "",
-             hashtags=tags, start=round(start, 2), end=round(end, 2),
-             layout=preset.get("layout") or us.get("default_layout") or ("split" if v.facecam else "blurfit"),
-             layout_params={}, caption_style=preset.get("caption_style") or us.get("default_caption_style") or "pop",
-             caption_params=preset.get("caption_params") or us.get("default_caption_params") or {},
-             words=_words_for(v.id, start, end), quality=us.get("quality") or config.DEFAULT_QUALITY,
-             watermark_text=(camp.watermark_text if camp and camp.require_watermark else us.get("watermark", "")) or "",
-             flags=list(h.flags or []) if h else [])
-    db.add(c)
-    if h:
-        h.status = "clipped"
-    db.flush()
-    return c
+def _new_clip(db, user, v, start, end, h, campaign_id):
+    try:
+        return clipmaker.new_clip(db, user, v, start, end, h, campaign_id)
+    except clipmaker.ClipError as e:
+        raise HTTPException(409, str(e))
 
 
 def queue_render(db, user, c: Clip) -> None:
-    if db.query(Job).filter(Job.clip_id == c.id, Job.type == "render", Job.status.in_(("queued", "running"))).count():
-        return
-    db.add(Job(user_id=user.id, type="render", clip_id=c.id, video_id=c.video_id, max_attempts=config.JOB_MAX_ATTEMPTS))
-    c.status = "rendering"
+    clipmaker.queue_render(db, user.id, c)
 
 
 class FromHighlight(BaseModel):
@@ -110,6 +76,23 @@ def clip_from_highlight(hid: int, body: FromHighlight, db: Session = Depends(get
         queue_render(db, user, c)
     db.commit()
     return clip_out(db, c)
+
+
+class TopIn(BaseModel):
+    count: int = 5
+
+
+@router.post("/videos/{vid}/clips/top")
+def top_clips(vid: int, body: TopIn, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """One tap: turn the best remaining highlights into clips with the campaign template, and start rendering."""
+    v = db.get(Video, vid)
+    if not v or v.user_id != user.id:
+        raise HTTPException(404, "Recording not found")
+    if not 1 <= body.count <= 30:
+        raise HTTPException(400, "count must be between 1 and 30")
+    made = clipmaker.make_top_clips(db, user, v, body.count)
+    db.commit()
+    return {"created": len(made), "ids": [c.id for c in made]}
 
 
 class ManualClip(BaseModel):
@@ -202,7 +185,7 @@ def patch_clip(cid: int, body: ClipPatch, db: Session = Depends(get_db), user: U
             have = c.words or []
             lo = min((w["s"] for w in have), default=1e18)
             hi = max((w["e"] for w in have), default=-1.0)
-            extra = [w for w in _words_for(v.id, ns, ne) if w["e"] <= lo or w["s"] >= hi]
+            extra = [w for w in clipmaker.words_for(v.id, ns, ne) if w["e"] <= lo or w["s"] >= hi]
             if extra:
                 data["words"] = sorted(have + extra, key=lambda w: w["s"])
     if data.pop("clear_campaign", False):
@@ -230,7 +213,7 @@ def patch_clip(cid: int, body: ClipPatch, db: Session = Depends(get_db), user: U
 def recaption(cid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Discard caption edits and reload words from the cached transcript (no re-transcription cost)."""
     c = own_clip(db, user, cid)
-    c.words = _words_for(c.video_id, c.start, c.end)
+    c.words = clipmaker.words_for(c.video_id, c.start, c.end)
     c.compliance = None
     db.commit()
     return clip_out(db, c, full=True)
@@ -405,6 +388,58 @@ def export_zip(ids: str, db: Session = Depends(get_db), user: User = Depends(cur
     db.commit()
     return FileResponse(tmp.name, media_type="application/zip", filename="clipforge_export.zip",
                         background=BackgroundTask(os.remove, tmp.name))
+
+
+UPLOAD_LINKS = {"tiktok": "https://www.tiktok.com/upload", "youtube_shorts": "https://studio.youtube.com",
+                "x": "https://x.com/compose/post"}
+PLATFORM_NAMES = {"tiktok": "TikTok", "youtube_shorts": "YouTube Shorts", "instagram_reels": "Instagram Reels", "x": "X",
+                  "facebook_reels": "Facebook Reels", "snapchat": "Snapchat", "other": "Other"}
+
+
+@router.get("/clips/{cid}/posting")
+def posting_kit(cid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Ready-to-paste text for each platform the campaign allows, plus the campaign's after-posting rules."""
+    c = own_clip(db, user, cid)
+    camp = db.get(Campaign, c.campaign_id) if c.campaign_id else None
+    tags = " ".join(c.hashtags or [])
+    desc = (c.description or "").strip()
+    plats = (camp.approved_platforms if camp and camp.approved_platforms else ["tiktok", "instagram_reels", "youtube_shorts"])
+    posted = {s.platform for s in db.query(Submission).filter(Submission.clip_id == c.id)}
+    out = []
+    for p in plats:
+        if p == "youtube_shorts":
+            head = " ".join((c.hashtags or [])[:3])
+            title = c.title if len(c.title) + len(head) + 1 <= 100 else c.title[:99 - len(head)].rstrip()
+            fields = [{"label": "Title", "text": f"{title} {head}".strip()},
+                      {"label": "Description", "text": " ".join(x for x in [desc, tags] if x)}]
+        elif p == "x":
+            body = " ".join(x for x in [c.title, desc] if x)
+            room = 280 - len(tags) - 1
+            fields = [{"label": "Post text", "text": f"{body[:max(0, room)].rstrip()} {tags}".strip()}]
+        else:
+            fields = [{"label": "Caption", "text": " ".join(x for x in [c.title, desc, tags] if x)}]
+        out.append({"platform": p, "name": PLATFORM_NAMES.get(p, p), "fields": fields, "upload_url": UPLOAD_LINKS.get(p),
+                    "posted": p in posted})
+    rules = []
+    if camp:
+        if camp.submit_within_min:
+            rules.append(f"Submit the link on the campaign page within {camp.submit_within_min} minutes of posting.")
+        if camp.min_views:
+            rules.append(f"A clip earns only after {camp.min_views:,} views.")
+        if camp.min_tier1_pct:
+            rules.append(f"At least {camp.min_tier1_pct:g}% of viewers must be in the campaign's required countries. "
+                         f"Record the figure from your analytics on the submission.")
+        if camp.keep_live_days:
+            rules.append(f"Keep the clip live for at least {camp.keep_live_days} days.")
+        if (camp.submission_instructions or "").strip():
+            rules.append(camp.submission_instructions.strip())
+    return {"approved": c.status == "approved", "platforms": out, "rules": rules,
+            "campaign_url": camp.whop_url if camp else "", "campaign_name": camp.name if camp else None}
+
+
+@router.get("/insights")
+def insights(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return clipmaker.insights(db, user.id)
 
 
 @router.get("/clips/{cid}/suggest")

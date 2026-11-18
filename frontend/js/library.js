@@ -1,7 +1,7 @@
 import { html, useState, useEffect, useRef, api, fail, toast, useLoad, Loading, ErrorBox, Field, Status, JobLine, Progress, Icon, clock, bytes, ago, nav, money } from "./core.js";
 
 // ----------------------------------------------------------------------------- upload (chunked, resumable)
-async function uploadFile(file, meta, onProgress) {
+async function uploadFile(file, meta, onProgress, after) {
   const v = await api("/videos", { method: "POST", body: { ...meta, filename: file.name, size: file.size } });
   const step = v.chunk_size;
   for (let off = 0; off < file.size; off += step) {
@@ -13,10 +13,12 @@ async function uploadFile(file, meta, onProgress) {
     }
     onProgress(Math.min(1, (off + blob.size) / file.size));
   }
-  return api(`/videos/${v.id}/complete`, { method: "POST" });
+  return api(`/videos/${v.id}/complete`, { method: "POST", body: after || {} });
 }
 
-function AddRecording({ campaigns, onDone }) {
+function AddRecording({ campaigns, onDone, user }) {
+  const us = (user && user.settings) || {};
+  const [auto, setAuto] = useState({ analyze: true, clips: us.auto_clips ?? 10 });
   const [mode, setMode] = useState("file");
   const [f, setF] = useState({ title: "", streamer: "", campaign_id: "", authorized: false, source_note: "", url: "" });
   const [file, setFile] = useState(null);
@@ -28,8 +30,8 @@ function AddRecording({ campaigns, onDone }) {
       if (mode === "file") {
         if (!file) return toast("Choose a video file first", true);
         setProg(0);
-        const v = await uploadFile(file, meta(), setProg);
-        toast("Upload finished"); onDone(v);
+        const v = await uploadFile(file, meta(), setProg, { analyze: auto.analyze, auto_clips: auto.analyze ? +auto.clips || 0 : 0 });
+        toast(auto.analyze ? "Upload finished. Analysis started." : "Upload finished"); onDone(v);
       } else {
         const v = await api("/videos/import-url", { method: "POST", body: { ...meta(), url: f.url } });
         toast("Import started"); onDone(v);
@@ -48,6 +50,8 @@ function AddRecording({ campaigns, onDone }) {
       <${Field} label="Streamer"><input value=${f.streamer} onInput=${up("streamer")} placeholder="Name used for credit and titles" /><//>
       <${Field} label="Campaign (optional)"><select value=${f.campaign_id} onChange=${up("campaign_id")}><option value="">None yet</option>${campaigns.map(c => html`<option value=${c.id}>${c.name}</option>`)}</select><//>
       <${Field} label="Where the footage came from" hint="For your own records"><input value=${f.source_note} onInput=${up("source_note")} placeholder="e.g. campaign's official VOD folder" /><//>
+      ${mode === "file" && html`<div class="wide row wrap"><label class="f inline"><input type="checkbox" checked=${auto.analyze} onChange=${e => setAuto({ ...auto, analyze: e.target.checked })} /><span>Analyse as soon as it uploads, then make the top</span></label>
+        <input type="number" min="0" max="30" style="width:70px" value=${auto.clips} disabled=${!auto.analyze} onInput=${e => setAuto({ ...auto, clips: e.target.value })} aria-label="Number of clips to make automatically" /><span class="small">clips automatically (0 = just rank them)</span></div>`}
       <label class="f inline wide"><input type="checkbox" checked=${f.authorized} onChange=${up("authorized")} />
         <span>I'm allowed to use this footage (campaign-provided or permitted by the streamer). It is not leaked or pre-release material.</span></label>
     </div>
@@ -56,13 +60,13 @@ function AddRecording({ campaigns, onDone }) {
       ${!f.authorized && html`<span class="hint">Tick the authorisation box to continue.</span>`}</div></div>`;
 }
 
-export function Library() {
+export function Library({ user }) {
   const { data, error, loading, reload } = useLoad(() => Promise.all([api("/videos"), api("/campaigns")]), [], 4000);
   if (loading && !data) return html`<${Loading} />`;
   if (error && !data) return html`<${ErrorBox} error=${error} retry=${reload} />`;
   const [videos, campaigns] = data;
   return html`<div class="head"><div class="grow"><h1>Recordings</h1><p>Upload a stream, run the analysis, then cut the moments it ranks highest.</p></div></div>
-    <${AddRecording} campaigns=${campaigns} onDone=${v => v.status === "uploaded" ? nav("/video/" + v.id) : reload()} />
+    <${AddRecording} campaigns=${campaigns} user=${user} onDone=${v => v.status === "uploaded" || v.status === "analyzing" ? nav("/video/" + v.id) : reload()} />
     <div class="card flush">${videos.length ? videos.map(v => html`<div class="item click" onClick=${() => nav("/video/" + v.id)}>
         <div class="grow"><div class="row"><b class="trunc">${v.title}</b><${Status} s=${v.status} /></div>
           <div class="small muted">${v.duration ? clock(v.duration) : "—"} · ${v.width ? `${v.width}×${v.height}` : "—"} · ${bytes(v.size)}${v.streamer ? " · " + v.streamer : ""} · ${ago(v.created_at)}</div>
@@ -102,6 +106,7 @@ function HighlightCard({ h, cats, onPreview, onClip, onDismiss, busy }) {
         <span class="pill">${h.scored_by === "heuristic" ? "Signal scoring" : "LLM + signals"}</span></div>
       <p class="muted small">${h.description}</p>
       <p class="small" style="margin-top:4px">${h.reason}</p>
+      ${s.hook_text && html`<p class="small" style="margin-top:4px"><span class="dim">Hook text:</span> ${s.hook_text}</p>`}
       <${Flags} flags=${h.flags} />
       ${open && html`<blockquote>${h.transcript || "No speech detected in this window."}</blockquote>
         <p class="small muted" style="margin-top:6px">${h.hook}</p>`}
@@ -119,6 +124,7 @@ export function VideoDetail({ id, sys, user }) {
   const [busy, setBusy] = useState(false);
   const [t, setT] = useState(0);
   const [mark, setMark] = useState({ a: null, b: null });
+  const [topN, setTopN] = useState(5);
   const vref = useRef(null), stopAt = useRef(null);
   useEffect(() => { if (data && data[0].analysis_settings && data[0].analysis_settings.min_duration) setOpt(o => ({ ...o, ...Object.fromEntries(Object.entries(data[0].analysis_settings).filter(([, v]) => v != null)) })); }, [data && data[0].status]);
   if (loading && !data) return html`<${Loading} />`;
@@ -131,7 +137,7 @@ export function VideoDetail({ id, sys, user }) {
   const onTime = () => { const el = vref.current; setT(el.currentTime); if (stopAt.current != null && el.currentTime >= stopAt.current) { el.pause(); stopAt.current = null; } };
   const run = async () => { setBusy(true); try { await api(`/videos/${id}/analyze`, { method: "POST", body: opt }); toast("Analysis queued"); reload(); } catch (e) { fail(e); } finally { setBusy(false); } };
   const clip = async h => { setBusy(true); try { const c = await api(`/highlights/${h.id}/clip`, { method: "POST", body: { render: true } }); nav("/studio/" + c.id); } catch (e) { fail(e); setBusy(false); } };
-  const clipTop = async n => { setBusy(true); try { for (const h of shown.slice(0, n)) await api(`/highlights/${h.id}/clip`, { method: "POST", body: { render: true } }); toast(`${Math.min(n, shown.length)} clips created and rendering`); nav("/clips"); } catch (e) { fail(e); setBusy(false); } };
+  const clipTop = async n => { setBusy(true); try { const r = await api(`/videos/${id}/clips/top`, { method: "POST", body: { count: n } }); toast(`${r.created} clips created and rendering`); nav("/clips"); } catch (e) { fail(e); setBusy(false); } };
   const dismiss = async h => { try { await api(`/highlights/${h.id}`, { method: "PATCH", body: { status: "dismissed" } }); reload(); } catch (e) { fail(e); } };
   const manual = async () => { try { const c = await api(`/videos/${id}/clips`, { method: "POST", body: { start: mark.a, end: mark.b } }); nav("/studio/" + c.id); } catch (e) { fail(e); } };
   const chat = async e => { const f = e.target.files[0]; if (!f) return; const fd = new FormData(); fd.append("file", f);
@@ -180,7 +186,8 @@ export function VideoDetail({ id, sys, user }) {
 
   <div class="card flush">
     <div class="row wrap" style="padding:14px 16px;border-bottom:1px solid var(--line)"><h2 class="grow">Ranked highlights <span class="muted" style="font-weight:400">${shown.length}</span></h2>
-      ${shown.length > 0 && html`<button class="btn sm" disabled=${busy} onClick=${() => clipTop(5)}>Make clips from top ${Math.min(5, shown.length)}</button>`}</div>
+      ${shown.length > 0 && html`<span class="small muted">Make the top</span><select style="width:auto" value=${topN} onChange=${e => setTopN(+e.target.value)} aria-label="How many clips">${[3, 5, 10, 15, 20].filter(n => n <= Math.max(3, shown.length)).map(n => html`<option value=${n}>${Math.min(n, shown.length)}</option>`)}</select>
+        <button class="btn sm primary" disabled=${busy} onClick=${() => clipTop(topN)}>Make clips</button>`}</div>
     ${shown.length ? shown.map(h => html`<${HighlightCard} key=${h.id} h=${h} cats=${cats} busy=${busy} onPreview=${x => { seek(x.start, x.end); vref.current && vref.current.scrollIntoView({ block: "nearest", behavior: "smooth" }); }} onClip=${clip} onDismiss=${dismiss} />`)
       : html`<div class="empty">${v.status === "ready" ? html`<b>No strong moments found</b>The stream had no stretch that stood out on audio, speech or chat. Try a lower minimum duration, add a chat log, or cut manually with the player above.`
         : working ? html`<b>Analysis in progress</b>Highlights appear here when it finishes. You can leave this page.` : html`<b>Not analysed yet</b>Run the analysis to get a ranked list of moments.`}</div>`}

@@ -2,11 +2,13 @@ import { html, useState, draft, api, fail, toast, useLoad, Loading, ErrorBox, Fi
 
 const BLANK = { name: "", streamer: "", whop_url: "", instructions: "", payout_per_1k: 1, max_budget: "", max_payout_per_clip: "", min_duration: 15, max_duration: 60,
   required_hashtags: "", required_cta: "", approved_platforms: [], prohibited: "", submission_instructions: "", deadline: "", status: "active",
-  require_watermark: false, watermark_text: "", require_attribution: true, notes: "", preset_layout: "", preset_caption: "" };
+  require_watermark: false, watermark_text: "", require_attribution: true, notes: "", preset_layout: "", preset_caption: "",
+  min_views: "", min_tier1_pct: "", submit_within_min: "", keep_live_days: "", cta_onscreen: "", auto_hook: true };
 
 function toForm(c) {
   return { ...BLANK, ...c, max_budget: c.max_budget ?? "", max_payout_per_clip: c.max_payout_per_clip ?? "", required_hashtags: (c.required_hashtags || []).join(" "),
-    prohibited: (c.prohibited || []).join(", "), deadline: dateOnly(c.deadline), preset_layout: (c.preset || {}).layout || "", preset_caption: (c.preset || {}).caption_style || "" };
+    prohibited: (c.prohibited || []).join(", "), deadline: dateOnly(c.deadline), min_views: c.min_views || "", min_tier1_pct: c.min_tier1_pct ?? "",
+    submit_within_min: c.submit_within_min ?? "", keep_live_days: c.keep_live_days ?? "", cta_onscreen: c.cta_onscreen || "", auto_hook: c.auto_hook !== false, preset_layout: (c.preset || {}).layout || "", preset_caption: (c.preset || {}).caption_style || "" };
 }
 function toBody(f) {
   const n = v => v === "" || v == null ? null : +v;
@@ -15,6 +17,8 @@ function toBody(f) {
     required_hashtags: f.required_hashtags.split(/[\s,]+/).filter(Boolean), required_cta: f.required_cta, approved_platforms: f.approved_platforms,
     prohibited: f.prohibited.split(",").map(s => s.trim()).filter(Boolean), submission_instructions: f.submission_instructions, deadline: f.deadline || null,
     status: f.status, require_watermark: f.require_watermark, watermark_text: f.watermark_text, require_attribution: f.require_attribution, notes: f.notes,
+    min_views: n(f.min_views) || 0, min_tier1_pct: n(f.min_tier1_pct), submit_within_min: n(f.submit_within_min), keep_live_days: n(f.keep_live_days),
+    cta_onscreen: f.cta_onscreen, auto_hook: f.auto_hook,
     preset: { ...(f.preset_layout ? { layout: f.preset_layout } : {}), ...(f.preset_caption ? { caption_style: f.preset_caption } : {}) } };
 }
 
@@ -37,8 +41,14 @@ function CampaignForm({ initial, sys, onClose }) {
       <${Field} label="Max payout per clip ($)" hint="Optional; caps the estimate"><input type="number" min="0" value=${f.max_payout_per_clip} onInput=${up("max_payout_per_clip")} /><//>
       <${Field} label="Min clip length (s)"><input type="number" min="0" value=${f.min_duration} onInput=${up("min_duration")} /><//>
       <${Field} label="Max clip length (s)"><input type="number" min="1" value=${f.max_duration} onInput=${up("max_duration")} /><//>
+      <${Field} label="Minimum views before a clip earns" hint="e.g. 2000. Leave empty if none"><input type="number" min="0" value=${f.min_views} onInput=${up("min_views")} /><//>
+      <${Field} label="Required audience share (%)" hint="e.g. 40 if 40% of viewers must be in USA/UK/CA/AU"><input type="number" min="0" max="100" value=${f.min_tier1_pct} onInput=${up("min_tier1_pct")} /><//>
+      <${Field} label="Submit link within (minutes)" hint="e.g. 30"><input type="number" min="0" value=${f.submit_within_min} onInput=${up("submit_within_min")} /><//>
+      <${Field} label="Keep clip live for (days)" hint="e.g. 30"><input type="number" min="0" value=${f.keep_live_days} onInput=${up("keep_live_days")} /><//>
       <${Field} label="Required hashtags" hint="Separated by spaces"><input value=${f.required_hashtags} onInput=${up("required_hashtags")} placeholder="#gta6 #streamer" /><//>
       <${Field} label="Required caption / CTA text"><input value=${f.required_cta} onInput=${up("required_cta")} placeholder="e.g. Watch live on kick.com/name" /><//>
+      <${Field} wide label="End-card text shown on every clip" hint="Shown over the last 3 seconds. e.g. Subscribe to @Tomovids on YouTube"><input maxlength="80" value=${f.cta_onscreen} onInput=${up("cta_onscreen")} /><//>
+      <label class="f inline wide"><input type="checkbox" checked=${f.auto_hook} onChange=${up("auto_hook")} /><span>Write an opening hook line automatically (names the streamer; you can edit it on each clip)</span></label>
       <${Field} wide label="Approved platforms" hint="Leave all off if the campaign allows any platform">
         <div class="row wrap">${sys.platforms.map(p => html`<label class="f inline"><input type="checkbox" checked=${f.approved_platforms.includes(p)} onChange=${() => plat(p)} /><span>${p.replace(/_/g, " ")}</span></label>`)}</div><//>
       <${Field} wide label="Prohibited words or topics" hint="Comma separated. Checked against the title, description and transcript."><input value=${f.prohibited} onInput=${up("prohibited")} /><//>
@@ -65,7 +75,7 @@ export function Campaigns({ sys }) {
   const leads = data.filter(c => c.status === "lead"), rest = data.filter(c => c.status !== "lead");
   const Card = c => html`<div class="card col" key=${c.id}>
     <div class="row wrap"><h2 class="grow trunc">${c.name}</h2><${Status} s=${c.status} /><span class="pill est">${money(c.payout_per_1k)} / 1k views</span></div>
-    <div class="small muted">${c.streamer || "No streamer set"} · ${c.min_duration}–${c.max_duration}s${c.required_hashtags.length ? " · " + c.required_hashtags.join(" ") : ""}${c.deadline ? " · ends " + dateOnly(c.deadline) : ""}</div>
+    <div class="small muted">${c.streamer || "No streamer set"} · ${c.min_duration}–${c.max_duration}s${c.required_hashtags.length ? " · " + c.required_hashtags.join(" ") : ""}${c.deadline ? " · ends " + dateOnly(c.deadline) : ""}${c.min_views ? " \u00b7 min " + int(c.min_views) + " views" : ""}${c.min_tier1_pct ? " \u00b7 " + c.min_tier1_pct + "% audience rule" : ""}</div>
     ${c.status !== "lead" && html`<div class="grid g4" style="gap:8px">
       ${[["Clips", int(c.stats.clips)], ["Approved views", int(c.stats.approved_views)], ["Estimated", money(c.stats.estimated)], ["Confirmed", money(c.stats.confirmed)]].map(([k, v]) => html`<div><div class="tiny dim">${k}</div><div class="num" style="font-weight:600">${v}</div></div>`)}</div>
       ${c.stats.budget_used_pct != null && html`<div><div class="row tiny dim" style="margin-bottom:3px"><span class="grow">Your estimated share of the ${money(c.max_budget)} budget</span><span class="num">${c.stats.budget_used_pct}%</span></div><${Progress} v=${c.stats.budget_used_pct} /></div>`}`}

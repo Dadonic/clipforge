@@ -104,8 +104,14 @@ async def upload_chunk(vid: int, offset: int, request: Request, db: Session = De
     return {"received": v.received, "size": v.size}
 
 
+class CompleteIn(BaseModel):
+    analyze: bool = False        # start the analysis straight away
+    auto_clips: int = 0          # and make this many clips when it finishes
+
+
 @router.post("/videos/{vid}/complete")
-def complete_upload(vid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def complete_upload(vid: int, body: CompleteIn | None = None, db: Session = Depends(get_db),
+                    user: User = Depends(current_user)):
     v = own_video(db, user, vid)
     if v.status != "uploading":
         return video_out(db, v)
@@ -116,6 +122,12 @@ def complete_upload(vid: int, db: Session = Depends(get_db), user: User = Depend
     except media.MediaError as e:
         raise HTTPException(422, str(e))
     db.refresh(v)
+    if body and body.analyze:
+        us = user.settings or {}
+        analyze(vid, AnalyzeIn(min_duration=us.get("min_duration") or 15, max_duration=us.get("max_duration") or 60,
+                               max_highlights=us.get("max_highlights") or 40, use_llm=us.get("use_llm", True),
+                               auto_clips=max(0, min(30, body.auto_clips))), db, user)
+        db.refresh(v)
     return video_out(db, v)
 
 
@@ -224,6 +236,7 @@ class AnalyzeIn(BaseModel):
     max_duration: float = 60
     max_highlights: int = 40
     use_llm: bool = True
+    auto_clips: int = 0          # after analysis, turn this many top highlights into clips automatically
 
 
 @router.post("/videos/{vid}/analyze")
@@ -235,10 +248,18 @@ def analyze(vid: int, body: AnalyzeIn, db: Session = Depends(get_db), user: User
         raise HTTPException(409, "Analysis is already running for this recording")
     if not (5 <= body.min_duration <= body.max_duration <= 180):
         raise HTTPException(400, "Durations must satisfy 5 <= min <= max <= 180 seconds")
+    if not 0 <= body.auto_clips <= 30:
+        raise HTTPException(400, "auto_clips must be between 0 and 30")
     payload = body.model_dump()
     camp = db.get(Campaign, v.campaign_id) if v.campaign_id else None
     if camp:
         payload["extra_hashtags"] = camp.required_hashtags or []
+        # campaign length limits win over the defaults, so every suggestion is already postable
+        if camp.min_duration and camp.max_duration and body.min_duration == 15 and body.max_duration == 60:
+            payload["min_duration"] = max(5.0, min(float(camp.min_duration), 175.0))
+            payload["max_duration"] = max(payload["min_duration"], min(float(camp.max_duration), 180.0))
+    from ..services import clipmaker
+    payload["category_boost"] = clipmaker.insights(db, user.id)["category_boost"]
     job = Job(user_id=user.id, type="analyze", video_id=vid, payload=payload, max_attempts=config.JOB_MAX_ATTEMPTS)
     v.status = "analyzing"
     db.add(job)
