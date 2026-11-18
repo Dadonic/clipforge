@@ -11,9 +11,12 @@ export async function api(path, { method = "GET", body, raw } = {}) {
   if (raw) opt.body = body;
   let r;
   try { r = await fetch("/api" + path, opt); }
-  catch (e) { throw new ApiError("Can't reach the server. Check your connection and try again.", 0); }
+  catch (e) { window.dispatchEvent(new Event("cf-offline")); throw new ApiError("Can't reach the ClipForge server. It may be asleep.", 0); }
   if (r.status === 401 && !path.startsWith("/auth/")) { window.dispatchEvent(new Event("cf-logout")); }
   const ct = r.headers.get("content-type") || "";
+  // A sleeping Codespace answers with a GitHub page or a gateway error instead of our JSON
+  if (!ct.includes("json") && (!r.ok || ct.includes("html"))) { window.dispatchEvent(new Event("cf-offline")); throw new ApiError("The ClipForge server is asleep or restarting.", r.status); }
+  window.dispatchEvent(new Event("cf-online"));
   const data = ct.includes("json") ? await r.json() : await r.text();
   if (!r.ok) {
     const d = data && data.detail;
@@ -59,6 +62,12 @@ export function ago(iso) {
 }
 export const dateOnly = iso => iso ? iso.slice(0, 10) : "";
 export const nav = path => { location.hash = "#" + path; };
+// Form drafts survive a server nap or an accidental refresh. Per-browser only; failures are ignored.
+export const draft = {
+  get(k) { try { return JSON.parse(localStorage.getItem("cf_draft_" + k) || "null"); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem("cf_draft_" + k, JSON.stringify(v)); } catch (e) {} },
+  clear(k) { try { localStorage.removeItem("cf_draft_" + k); } catch (e) {} },
+};
 
 // ----------------------------------------------------------------------------- hooks
 export function useLoad(fn, deps = [], pollMs = 0) {
