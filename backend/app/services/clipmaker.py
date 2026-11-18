@@ -4,7 +4,7 @@ import json
 
 from .. import config
 from ..db import Campaign, Clip, Highlight, Job, Submission, User, Video
-from . import semantic
+from . import offstream, semantic
 
 
 class ClipError(ValueError):
@@ -16,6 +16,40 @@ def words_for(video_id: int, start: float, end: float) -> list[dict]:
     if not p.exists():
         return []
     return [w for w in json.loads(p.read_text())["words"] if w["e"] > start and w["s"] < end]
+
+
+def offstream_flags(video_id: int, start: float, end: float) -> list[dict]:
+    """A clip cut by hand can still land on an ad break or on the player's controls. Flag it for review."""
+    p = config.WORK_DIR / str(video_id) / "offstream.json"
+    if not p.exists():
+        return []
+    try:
+        segs = offstream.overlap(json.loads(p.read_text()).get("segments", []), start, end)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for reason in sorted({s["reason"] for s in segs}):
+        secs = sum(min(end, s["e"]) - max(start, s["s"]) for s in segs if s["reason"] == reason)
+        out.append({"code": "off_stream" if reason == "ad_or_break" else "player_controls", "severity": "review",
+                    "detail": f"{offstream.REASONS[reason]} for about {secs:.0f}s of this clip. Trim it out before posting."})
+    return out
+
+
+def default_layout(v: Video) -> tuple[str, dict, dict]:
+    """(layout, layout_params, caption overrides) when neither the campaign nor the user chose one."""
+    cam = v.facecam
+    if not cam:
+        return "blurfit", {}, {}
+    # facecam on top, gameplay below. Slide the gameplay crop off the webcam if the webcam sits at a side.
+    lp = {}
+    fw = min(1.0, (config.OUT_W / (config.OUT_H * 0.66)) * (v.height or 9) / (v.width or 16))
+    if fw < 1.0:
+        centre = (1 - fw) / 2
+        if cam["x"] + cam["w"] / 2 > 0.5 and cam["x"] < centre + fw:           # webcam on the right
+            lp["focus_x"] = round(max(0.0, min(centre, cam["x"] - fw)) / (1 - fw), 3)
+        elif cam["x"] + cam["w"] / 2 <= 0.5 and cam["x"] + cam["w"] > centre:  # webcam on the left
+            lp["focus_x"] = round(min(1 - fw, max(centre, cam["x"] + cam["w"])) / (1 - fw), 3)
+    return "split", lp, {"hook_y": 0.38}                                       # hook card under the face, not on it
 
 
 def new_clip(db, user: User, v: Video, start: float, end: float, h: Highlight | None = None,
@@ -35,6 +69,11 @@ def new_clip(db, user: User, v: Video, start: float, end: float, h: Highlight | 
         if t.lower() not in [x.lower() for x in tags]:
             tags.append(t)
     cp = dict(preset.get("caption_params") or us.get("default_caption_params") or {})
+    layout, lp = preset.get("layout") or us.get("default_layout"), {}
+    if not layout:
+        layout, lp, cap = default_layout(v)
+        cp = {**cap, **cp}
+    flags = (list(h.flags or []) if h else []) + offstream_flags(v.id, start, end)
     auto_hook = camp.auto_hook if camp is not None and camp.auto_hook is not None else us.get("auto_hook", True)
     if auto_hook and h and not cp.get("hook_text"):
         cp["hook_text"] = (h.signals or {}).get("hook_text") or ""
@@ -43,11 +82,10 @@ def new_clip(db, user: User, v: Video, start: float, end: float, h: Highlight | 
     c = Clip(user_id=user.id, video_id=v.id, highlight_id=h.id if h else None, campaign_id=camp.id if camp else None,
              title=(h.title if h else f"{v.title} clip")[:300], description=(camp.required_cta if camp else "") or "",
              hashtags=tags, start=round(start, 2), end=round(end, 2),
-             layout=preset.get("layout") or us.get("default_layout") or ("split" if v.facecam else "blurfit"),
-             layout_params={}, caption_style=preset.get("caption_style") or us.get("default_caption_style") or "pop",
+             layout=layout, layout_params=lp, caption_style=preset.get("caption_style") or us.get("default_caption_style") or "pop",
              caption_params=cp, words=words_for(v.id, start, end), quality=us.get("quality") or config.DEFAULT_QUALITY,
              watermark_text=(camp.watermark_text if camp and camp.require_watermark else us.get("watermark", "")) or "",
-             flags=list(h.flags or []) if h else [], category=(h.category if h else "") or "")
+             flags=flags, category=(h.category if h else "") or "")
     db.add(c)
     if h:
         h.status = "clipped"

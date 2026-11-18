@@ -23,6 +23,11 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+# A copy of FFmpeg placed in <project>/tools/ffmpeg/bin is used without any system install.
+_ff = ROOT / "tools" / "ffmpeg" / "bin"
+if _ff.is_dir():
+    os.environ["PATH"] = str(_ff) + os.pathsep + os.environ.get("PATH", "")
+
 DATA_DIR = Path(_env("CLIPFORGE_DATA_DIR", str(ROOT / "data"))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 WORK_DIR = DATA_DIR / "work"        # per-video caches: audio, proxy, transcript, analysis

@@ -119,12 +119,16 @@ def heuristic_copy(sentences: list[str], signals: dict, category: str, label: st
     who = streamer.strip() or "Streamer"
     quote = _best_quote(sentences, profile)
     titles = []
-    if quote:
+    # a quote only leads the title when it carries something: reaction language, or enough words to mean something
+    strong = bool(quote) and (text_score(quote, profile) >= 0.3 or len(quote.split()) >= 5)
+    if strong:
         titles.append(f"“{quote}” — {who} on GTA 6")
     if signals.get("laugh", 0) > 0.4:
         titles.append(f"{who} can't stop laughing at this GTA 6 moment")
     if signals.get("scream", 0) > 0.4 or signals.get("onset", 0) > 0.6:
         titles.append(f"{who} was NOT ready for this in GTA 6")
+    if quote and not strong:
+        titles.append(f"“{quote}” — {who} on GTA 6")
     titles.append(f"GTA 6: {label.lower()} ({who})")
     if quote and len(titles) < 4:
         titles.append(f"{who}: “{quote}”")
@@ -145,25 +149,37 @@ def heuristic_copy(sentences: list[str], signals: dict, category: str, label: st
     return {"title": uniq[0], "title_options": uniq[:4], "hook": hook, "hashtags": tags}
 
 
-HOOK_BY_CATEGORY = {
-    "police": "{who} vs the cops in GTA 6", "driving": "{who}'s wildest GTA 6 drive", "fail": "{who}'s GTA 6 fail",
-    "physics": "GTA 6 physics broke for {who}", "npc_interaction": "{who} meets a GTA 6 NPC",
-    "discovery": "{who} found this in GTA 6", "commentary": "{who} on GTA 6",
+HOOKS = {
+    "laugh": ["{who} can't stop laughing", "{who} loses it laughing", "This cracked {who} up"],
+    "scream": ["{who} was NOT ready for this", "{who} did not see this coming", "This caught {who} off guard"],
+    "police": ["{who} vs the cops in GTA 6", "The cops are after {who}", "{who}'s GTA 6 police chase"],
+    "driving": ["{who}'s wildest GTA 6 drive", "{who} behind the wheel in GTA 6", "{who}'s GTA 6 driving moment"],
+    "fail": ["{who}'s GTA 6 fail", "It went wrong for {who}", "{who} messed this up in GTA 6"],
+    "physics": ["GTA 6 physics broke for {who}", "{who} vs GTA 6 physics", "GTA 6 physics did this to {who}"],
+    "npc_interaction": ["{who} meets a GTA 6 NPC", "This NPC got {who} talking", "{who} and this GTA 6 NPC"],
+    "discovery": ["{who} found this in GTA 6", "{who} spots a GTA 6 detail", "Look what {who} found in GTA 6"],
+    "commentary": ["{who} on GTA 6", "{who}'s take on GTA 6", "{who} talks GTA 6"],
+    "default": ["{who}'s GTA 6 moment", "{who} playing GTA 6", "Watch {who} in GTA 6"],
 }
+HOOK_BY_CATEGORY = {k: v[0] for k, v in HOOKS.items()}      # kept for callers that want the first choice
 
 
-def make_hook(sentences: list[str], signals: dict, category: str, streamer: str, profile: dict, max_len: int = 46) -> str:
+def make_hook(sentences: list[str], signals: dict, category: str, streamer: str, profile: dict, max_len: int = 46,
+              variant: int = 0) -> str:
     """Opening hook line, built only from what was said or measured. Names the streamer, because most
-    campaigns require the streamer's name on screen."""
+    campaigns require the streamer's name on screen. `variant` picks the next wording, so clips cut from
+    one recording do not all open with the same line."""
     who = streamer.strip() or "Streamer"
     quote = _best_quote(sentences, profile, max_len=max_len - len(who) - 4)
-    if quote and text_score(quote, profile) >= 0.3 and len(quote.split()) >= 2:
+    if variant == 0 and quote and text_score(quote, profile) >= 0.3 and len(quote.split()) >= 2:
         return f"{who}: \u201c{quote}\u201d"
+    pool = []
     if signals.get("laugh", 0) > 0.45:
-        return f"{who} can't stop laughing"
+        pool += HOOKS["laugh"]
     if signals.get("scream", 0) > 0.45:
-        return f"{who} was NOT ready for this"
-    return HOOK_BY_CATEGORY.get(category, "{who}'s GTA 6 moment").format(who=who)[:max_len + 10]
+        pool += HOOKS["scream"]
+    pool += HOOKS.get(category, []) + HOOKS["default"]
+    return pool[variant % len(pool)].format(who=who)[:max_len + 10]
 
 
 # --------------------------------------------------------------------------- LLM (optional)

@@ -32,44 +32,84 @@ def cluster_faces(dets: list[list[tuple[float, float, float, float]]], min_share
 
 
 def face_to_cam_rect(face: dict, aspect: float) -> dict:
-    """Expand a face box to a plausible webcam frame (head and shoulders), clamped to the picture."""
-    w = min(1.0, face["w"] * 3.0)
-    h = min(1.0, face["h"] * 2.6)
-    x = face["cx"] - w / 2
-    y = face["cy"] - h * 0.42
-    x = float(np.clip(x, 0, 1 - w))
-    y = float(np.clip(y, 0, 1 - h))
-    return {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+    """Expand a face box to a plausible webcam frame (head and shoulders). A webcam in a corner is cut
+    off by the edge of the picture, so the frame is clipped to the picture rather than pushed back into it."""
+    w, h = face["w"] * 3.0, face["h"] * 2.6
+    x0, y0 = face["cx"] - w / 2, face["cy"] - h * 0.42
+    x1, y1 = min(1.0, x0 + w), min(1.0, y0 + h)
+    x0, y0 = max(0.0, x0), max(0.0, y0)
+    return {"x": round(x0, 4), "y": round(y0, 4), "w": round(x1 - x0, 4), "h": round(y1 - y0, 4)}
 
 
-def detect(src: str, duration: float, samples: int = 14) -> dict | None:
-    try:
-        import cv2
-    except ImportError:
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")   # detectors shipped with the app
+
+
+def _yunet(cv2):
+    """Neural face detector (YuNet). Finds tilted and partly turned faces that the Haar cascade misses,
+    which is the normal state of a streamer looking at the game."""
+    path = os.path.join(ASSETS, "face_detection_yunet_2023mar.onnx")
+    if not os.path.exists(path) or not hasattr(cv2, "FaceDetectorYN"):
         return None
+    try:
+        det = cv2.FaceDetectorYN.create(path, "", (960, 540), 0.6, 0.3, 50)
+    except Exception:
+        return None
+
+    def find(img):
+        H, W = img.shape[:2]
+        det.setInputSize((W, H))
+        _, faces = det.detect(img)
+        return [(float(f[0]), float(f[1]), float(f[2]), float(f[3])) for f in (faces if faces is not None else [])]
+    return find
+
+
+def _haar(cv2):
     name = "haarcascade_frontalface_default.xml"
-    bundled = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", name)   # shipped with the app
+    bundled = os.path.join(ASSETS, name)
     path = bundled if os.path.exists(bundled) else os.path.join(getattr(cv2.data, "haarcascades", ""), name)
     if not os.path.exists(path):
         return None
     casc = cv2.CascadeClassifier(path)
     if casc.empty():
         return None
-    dets, aspect = [], 16 / 9
-    with tempfile.TemporaryDirectory() as td:
-        for i in range(samples):
-            t = duration * (i + 0.5) / samples
-            fp = os.path.join(td, f"{i}.jpg")
-            if not media.grab_frame(src, t, fp, width=960):
-                continue
-            img = cv2.imread(fp)
-            if img is None:
-                continue
-            H, W = img.shape[:2]
-            aspect = W / H
-            gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
-            faces = casc.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(int(W * 0.03), int(W * 0.03)))
-            # a webcam face is small relative to the frame; a face filling the frame is a cutscene close-up
-            dets.append([((x + w / 2) / W, (y + h / 2) / H, w / W, h / H) for x, y, w, h in faces if w / W < 0.3])
-    face = cluster_faces(dets)
-    return face_to_cam_rect(face, aspect) if face else None
+
+    def find(img):
+        W = img.shape[1]
+        gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        return [tuple(map(float, f)) for f in
+                casc.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(int(W * 0.03), int(W * 0.03)))]
+    return find
+
+
+def detect(src: str, duration: float, samples: int = 24) -> dict | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+    for make in (_yunet, _haar):
+        find = make(cv2)
+        if not find:
+            continue
+        dets, aspect = [], 16 / 9
+        with tempfile.TemporaryDirectory() as td:
+            for i in range(samples):
+                t = duration * (i + 0.5) / samples
+                fp = os.path.join(td, f"{i}.jpg")
+                if not media.grab_frame(src, t, fp, width=960):
+                    continue
+                img = cv2.imread(fp)
+                if img is None:
+                    continue
+                H, W = img.shape[:2]
+                aspect = W / H
+                try:
+                    faces = find(img)
+                except Exception:
+                    faces = []
+                # a webcam face is small relative to the frame; a face filling the frame is a cutscene close-up
+                dets.append([((x + w / 2) / W, (y + h / 2) / H, w / W, h / H) for x, y, w, h in faces
+                             if 0.03 < w / W < 0.3])
+        face = cluster_faces(dets)
+        if face:
+            return face_to_cam_rect(face, aspect)
+    return None

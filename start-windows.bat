@@ -21,6 +21,7 @@ py -3 --version >nul 2>nul && set "PY=py -3"
 if not defined PY python --version >nul 2>nul && set "PY=python"
 if not defined PY goto need_python
 
+if exist "%~dp0tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%~dp0tools\ffmpeg\bin;%PATH%"
 ffmpeg -version >nul 2>nul
 if errorlevel 1 goto need_ffmpeg
 
