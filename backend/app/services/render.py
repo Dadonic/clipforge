@@ -110,7 +110,9 @@ def render_hash(clip: dict) -> str:
 
 
 def _fesc(path: str) -> str:
-    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    """Escape a file path for use inside a quoted ffmpeg filter option. Windows paths are turned into
+    forward-slash form first (C:\\clips\\a.ass -> C\\:/clips/a.ass), which is what ffmpeg expects there."""
+    return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
 
 def render_clip(src: str, out: str, *, start: float, end: float, src_w: int, src_h: int, src_fps: float,

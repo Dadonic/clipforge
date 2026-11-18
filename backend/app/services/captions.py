@@ -23,6 +23,31 @@ DEFAULT_PARAMS = {"enabled": True, "font": "Poppins Bold", "size": None, "y": 0.
                   "cta_text": "", "cta_seconds": 3.0, "cta_y": 0.84}
 
 
+def _font_names(path) -> tuple[str, str] | None:
+    """(family, style) of a font file. Uses fontconfig where it exists (Linux, macOS) and Pillow otherwise (Windows)."""
+    try:
+        r = subprocess.run(["fc-scan", "--format", "%{family}|%{style}", str(path)], capture_output=True, text=True)
+        if r.returncode == 0 and "|" in r.stdout:
+            fam, style = r.stdout.strip().split("|", 1)
+            return fam.split(",")[-1].strip(), style.split(",")[0].strip()
+    except OSError:
+        pass
+    return _font_names_pillow(path)
+
+
+def _font_names_pillow(path) -> tuple[str, str] | None:
+    try:
+        from PIL import ImageFont
+        fam, style = ImageFont.truetype(str(path), 20).getname()
+    except Exception:
+        return None
+    style = (style or "Regular").strip()
+    # libass selects a face by its full name; plain weights are reached through the family plus the bold flag
+    if style.lower() not in ("regular", "bold", "italic", "bold italic") and style.lower() not in fam.lower():
+        fam = f"{fam} {style}"
+    return fam.strip(), style
+
+
 @lru_cache(maxsize=1)
 def list_fonts() -> list[dict]:
     out = []
@@ -31,12 +56,10 @@ def list_fonts() -> list[dict]:
     except FileNotFoundError:
         files = []
     for f in files:
-        r = subprocess.run(["fc-scan", "--format", "%{family}|%{style}", str(f)], capture_output=True, text=True)
-        if r.returncode != 0 or "|" not in r.stdout:
+        names = _font_names(f)
+        if not names:
             continue
-        fam, style = r.stdout.strip().split("|", 1)
-        ass_name = fam.split(",")[-1].strip()
-        st = style.split(",")[0].strip()
+        ass_name, st = names
         bold = "bold" in st.lower() and "bold" not in ass_name.lower()
         label = ass_name if st.lower() in ass_name.lower() or st.lower() == "regular" else f"{ass_name} {st}"
         out.append({"label": label, "ass_name": ass_name, "bold": bold, "file": f.name})

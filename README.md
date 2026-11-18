@@ -157,6 +157,18 @@ Per the brief, Phase 4 was left out: teams/roles, billing, cloud autoscaling. Al
 tracking (the facecam region is fixed per recording), direct posting to TikTok/YouTube/Instagram, and a trained
 sound-event model.
 
+## Run it on a Windows laptop (free, no time limits)
+
+1. On GitHub open the repository, click **Code → Download ZIP**, and extract it somewhere such as `Documents\clipforge`.
+2. Double-click **start-windows.bat**. If Python or FFmpeg is missing it offers to install each one with winget;
+   after an install, close the window and double-click the file again.
+3. The first start installs the Python packages (a few minutes), then opens `http://localhost:8000` in your browser.
+
+Keep the black window open while you work; closing it stops ClipForge. Recordings, clips and the database are kept in
+`%USERPROFILE%\ClipForgeData`, outside the program folder, so replacing the folder with a newer ZIP keeps your data.
+The Windows start file has not been run on a Windows machine by its author; the Python code paths it uses are covered by
+the unit tests on Linux.
+
 ## Free hosting on GitHub Codespaces
 
 Open the repository on GitHub → **Code** → **Codespaces** → **Create codespace**. The first start installs FFmpeg and

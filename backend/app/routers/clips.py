@@ -281,7 +281,10 @@ def _delete_clip(db, c: Clip) -> None:
     if db.query(Submission).filter(Submission.clip_id == c.id).count():
         raise HTTPException(409, f"“{c.title}” has recorded submissions. Delete those first to keep earnings history consistent.")
     if c.output_path and os.path.exists(c.output_path):
-        os.remove(c.output_path)
+        try:
+            os.remove(c.output_path)
+        except OSError:
+            pass
     if c.highlight_id:
         h = db.get(Highlight, c.highlight_id)
         if h:
