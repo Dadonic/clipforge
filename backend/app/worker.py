@@ -15,7 +15,7 @@ from sqlalchemy import update
 
 from . import config
 from .db import Clip, Highlight, Job, SessionLocal, Video, init_db, log_activity, now
-from .services import audio_analysis, chat, compliance, facecam, highlights, media, render, semantic, storage, transcription
+from .services import audio_analysis, chat, compliance, facecam, highlights, media, offstream, render, semantic, storage, transcription
 
 log = logging.getLogger("clipforge.worker")
 
@@ -102,6 +102,16 @@ def run_analyze(job: Job, rep: Reporter) -> None:
         scenes = media.detect_scenes(str(proxy), dur, progress=rep.span(0.76, 0.88, "Detecting scene changes"))
         (wd / "scenes.json").write_text(json.dumps(scenes))
 
+    off = _load_json(wd / "offstream.json")
+    if off is None:
+        try:
+            off = offstream.scan(str(proxy), dur, rep.span(0.86, 0.88, "Checking for ads and player controls"))
+        except Exception as e:  # a failed scan must not cost the user the analysis
+            log.warning("off-stream scan failed: %s", e)
+            off = {"step": 1.0, "segments": [], "seconds": 0.0, "error": str(e)[:200]}
+        (wd / "offstream.json").write_text(json.dumps(off))
+    settings["offstream"] = off.get("segments", [])
+
     cam = None
     if fc_source != "manual":
         rep(0.88, "Looking for a facecam", force=True)
@@ -125,7 +135,8 @@ def run_analyze(job: Job, rep: Reporter) -> None:
             cost["llm_error"] = meta["llm"]["error"]
     cost["total_usd"] = round(cost.get("transcription_usd", 0) + cost.get("llm_usd", 0), 4)
     (wd / "timeline.json").write_text(json.dumps({
-        "audio": {k: audio.get(k, []) for k in ("excite", "laugh", "scream", "db")}, "scenes": scenes, "chat": chat_sig}))
+        "audio": {k: audio.get(k, []) for k in ("excite", "laugh", "scream", "db")}, "scenes": scenes, "chat": chat_sig,
+        "offstream": off.get("segments", [])}))
 
     with SessionLocal() as db:
         v = db.get(Video, vid)
@@ -151,7 +162,8 @@ def run_analyze(job: Job, rep: Reporter) -> None:
             v.error = "No transcription provider available: " + tr["warning"]
         if cam and v.facecam_source != "manual":
             v.facecam, v.facecam_source = cam, "auto"
-        log_activity(db, v.user_id, "analysis", f"Analysed “{v.title}”: {len(cands)} highlights found")
+        skipped = f"; skipped {off['seconds']:.0f}s of ads or player controls" if off.get("seconds") else ""
+        log_activity(db, v.user_id, "analysis", f"Analysed “{v.title}”: {len(cands)} highlights found{skipped}")
         db.commit()
         n_auto = int(settings.get("auto_clips") or 0)
         if n_auto > 0:

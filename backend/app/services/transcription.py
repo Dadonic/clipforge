@@ -150,7 +150,8 @@ class FasterWhisperProvider:
 
     def transcribe(self, wav: str, progress: Optional[Callable[[float], None]] = None) -> list[dict]:
         total = wav_duration(wav)
-        segs, _ = self.model.transcribe(wav, word_timestamps=True, vad_filter=True, beam_size=1,
+        # Pass samples, not the path: faster-whisper's own file reader breaks with newer PyAV releases.
+        segs, _ = self.model.transcribe(read_wav(wav), word_timestamps=True, vad_filter=True, beam_size=1,
                                         condition_on_previous_text=False)
         words = []
         for seg in segs:

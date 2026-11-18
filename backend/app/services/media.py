@@ -15,9 +15,13 @@ class MediaError(RuntimeError):
 
 
 def probe(path: str) -> dict:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True)
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        raise MediaError("FFmpeg is not installed on this computer (or the server window was opened before it was "
+                         "installed). Install FFmpeg, close the server window, and start ClipForge again.")
     if r.returncode != 0:
         raise MediaError(f"ffprobe could not read this file: {r.stderr.strip()[:300]}")
     data = json.loads(r.stdout)

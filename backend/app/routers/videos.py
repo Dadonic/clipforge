@@ -307,7 +307,8 @@ def timeline(vid: int, db: Session = Depends(get_db), user: User = Depends(curre
     def ds(a):
         return [round(max(a[i:i + step]), 3) for i in range(0, len(a), step)] if a else []
     return {"step": step, "duration": v.duration, "excite": ds(t["audio"].get("excite", [])),
-            "laugh": ds(t["audio"].get("laugh", [])), "chat": ds(t.get("chat", [])), "scenes": t.get("scenes", [])[:3000]}
+            "laugh": ds(t["audio"].get("laugh", [])), "chat": ds(t.get("chat", [])), "scenes": t.get("scenes", [])[:3000],
+            "offstream": t.get("offstream", [])}
 
 
 @router.get("/videos/{vid}/transcript")

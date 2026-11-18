@@ -85,12 +85,13 @@ function Timeline({ vid, duration, highlights, playhead, onSeek }) {
   return html`<div><div class="tl" onClick=${click} title="Click to jump">
       <svg viewBox="0 0 1000 74" preserveAspectRatio="none"><path d=${path(data.excite) + "L1000,74L0,74Z"} fill="rgba(255,106,43,.18)" stroke="#ff6a2b" stroke-width="1" vector-effect="non-scaling-stroke" />
         ${data.chat.length > 0 && html`<path d=${path(data.chat)} fill="none" stroke="#8ea0ff" stroke-width="1" vector-effect="non-scaling-stroke" />`}</svg>
+      ${(data.offstream || []).map(o => html`<div class="off" style=${`left:${o.s / duration * 100}%;width:${Math.max(0.3, (o.e - o.s) / duration * 100)}%`} title=${o.reason === "ad_or_break" ? "Ad break or off-stream screen: never used in clips" : "Player controls on screen: never used in clips"}></div>`)}
       ${highlights.map(h => html`<div class="rng" style=${`left:${h.start / duration * 100}%;width:${Math.max(0.3, (h.end - h.start) / duration * 100)}%`} title=${`#${h.rank} ${h.title}`}></div>`)}
       <div class="ph" style=${`left:${playhead / duration * 100}%`}></div></div>
-    <div class="legend" style="margin-top:6px"><span><i style="background:#ff6a2b"></i>Audio excitement vs. stream baseline</span>${data.chat.length > 0 && html`<span><i style="background:#8ea0ff"></i>Chat activity</span>`}<span><i style="background:rgba(255,106,43,.3);border:1px solid #ff6a2b"></i>Suggested highlights</span></div></div>`;
+    <div class="legend" style="margin-top:6px"><span><i style="background:#ff6a2b"></i>Audio excitement vs. stream baseline</span>${data.chat.length > 0 && html`<span><i style="background:#8ea0ff"></i>Chat activity</span>`}<span><i style="background:rgba(255,106,43,.3);border:1px solid #ff6a2b"></i>Suggested highlights</span>${(data.offstream || []).length > 0 && html`<span><i style="background:rgba(160,165,180,.45)"></i>Ads / player controls (skipped)</span>`}</div></div>`;
 }
 
-const FLAG_NAMES = { possible_spoiler: "Possible story spoiler", graphic_violence: "Possible graphic violence", strong_language: "Strong language", possible_cinematic: "Possible cutscene" };
+const FLAG_NAMES = { possible_spoiler: "Possible story spoiler", graphic_violence: "Possible graphic violence", strong_language: "Strong language", possible_cinematic: "Possible cutscene", off_stream: "Ad break or off-stream screen", player_controls: "Player controls on screen" };
 export const Flags = ({ flags }) => (flags || []).map(f => html`<div class="flag"><b>${FLAG_NAMES[f.code] || f.code}.</b> ${f.detail}</div>`);
 
 function HighlightCard({ h, cats, onPreview, onClip, onDismiss, busy }) {

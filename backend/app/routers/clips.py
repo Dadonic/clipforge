@@ -188,6 +188,13 @@ def patch_clip(cid: int, body: ClipPatch, db: Session = Depends(get_db), user: U
             extra = [w for w in clipmaker.words_for(v.id, ns, ne) if w["e"] <= lo or w["s"] >= hi]
             if extra:
                 data["words"] = sorted(have + extra, key=lambda w: w["s"])
+        # moving the cut can move it onto, or off, an ad break or the player's controls
+        own = ("off_stream", "player_controls")
+        fresh = clipmaker.offstream_flags(v.id, ns, ne)
+        had = {f["code"] for f in (c.flags or []) if f.get("code") in own}
+        c.flags = [f for f in (c.flags or []) if f.get("code") not in own] + fresh
+        if {f["code"] for f in fresh} - had:
+            c.flags_cleared = False
     if data.pop("clear_campaign", False):
         c.campaign_id = None
     if data.get("campaign_id") is not None:

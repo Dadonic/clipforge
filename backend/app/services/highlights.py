@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from . import semantic
 
 DEFAULTS = {"min_duration": 15.0, "max_duration": 60.0, "max_highlights": 40, "streamer": "", "profile": "gta6",
-            "use_llm": True, "extra_hashtags": [], "min_score": 30.0, "category_boost": {}}
+            "use_llm": True, "extra_hashtags": [], "min_score": 30.0, "category_boost": {}, "offstream": []}
 
 
 def build_sentences(words: list[dict], max_gap: float = 0.8, max_len: float = 14.0) -> list[dict]:
@@ -147,6 +147,29 @@ def build_window(p: int, sig: dict, sentences: list[dict], duration: float, mn: 
             "starts_clean": starts_clean, "ends_clean": ends_clean}
 
 
+def clear_of(w: dict, off_segs: list[dict], mn: float) -> dict | None:
+    """Trim a window so it contains no off-stream time. The peak stays inside; a window that cannot keep
+    its minimum length without touching an ad or the player UI is dropped rather than stretched."""
+    if not off_segs:
+        return w
+    start, end, peak = w["start"], w["end"], w["peak"]
+    for s in off_segs:
+        if s["e"] <= start or s["s"] >= end:
+            continue
+        if s["s"] <= peak <= s["e"]:
+            return None
+        if s["e"] <= peak:
+            start = max(start, s["e"] + 0.2)
+        else:
+            end = min(end, s["s"] - 0.2)
+    if (start, end) == (w["start"], w["end"]):
+        return w
+    if end - start < mn:
+        return None
+    return {**w, "start": round(start, 2), "end": round(end, 2), "starts_clean": w["starts_clean"] and start == w["start"],
+            "ends_clean": w["ends_clean"] and end == w["end"]}
+
+
 def _jaccard(a: str, b: str) -> float:
     A, B = set(a.lower().split()), set(b.lower().split())
     return len(A & B) / max(1, len(A | B))
@@ -177,10 +200,22 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
     mx = max(mx, mn)
     profile = semantic.load_profile(st["profile"])
     n = max(int(duration), int(audio.get("seconds", 0)), 1)
+    # off-stream parts (ad breaks, buffering, player controls on screen) can never be clip material:
+    # what is said there is an advert, and what is shown is not the stream
+    off_segs = [s for s in (st.get("offstream") or []) if s["e"] > s["s"]]
+    off = np.zeros(n, dtype=bool)
+    for s in off_segs:
+        off[max(0, int(s["s"])):min(n, int(np.ceil(s["e"])))] = True
+    if off_segs:
+        words = [w for w in words if not any(s["s"] <= (w["s"] + w["e"]) / 2 <= s["e"] for s in off_segs)]
     sentences = build_sentences(words)
     sig = interest_curve(n, audio, scenes, chat, sentences, profile)
+    if off.any():
+        for k in ("curve", "excite", "onset", "laugh", "scream", "text", "chat"):
+            sig[k] = np.where(off, 0.0, sig[k])
     curve = sig["curve"]
-    meta = {"sentences": len(sentences), "has_chat": bool(sig["has_chat"]), "semantic": "heuristic", "llm": None}
+    meta = {"sentences": len(sentences), "has_chat": bool(sig["has_chat"]), "semantic": "heuristic", "llm": None,
+            "offstream_seconds": round(float(sum(s["e"] - s["s"] for s in off_segs)), 1), "offstream_dropped": 0}
     if duration < mn or curve.max() <= 0:
         return [], meta
 
@@ -195,6 +230,10 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
     cands = []
     for p in peaks:
         w = build_window(int(p), sig, sentences, duration, mn, mx)
+        w = clear_of(w, off_segs, mn)
+        if w is None:
+            meta["offstream_dropped"] += 1
+            continue
         a, b = int(w["start"]), max(int(w["start"]) + 1, int(np.ceil(w["end"])))
         b = min(b, n)
         cw = [x for x in words if x["s"] >= w["start"] - 0.05 and x["e"] <= w["end"] + 0.3]
@@ -255,6 +294,7 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
                       if len(s["text"].split()) >= 3), "")
         desc = (f"{label}. " + (f"Streamer says: “{quote[:140]}”" if quote else "No clear speech in this window."))
         signals["hook_text"] = semantic.make_hook([s["text"] for s in sents], signals, cat, st["streamer"], profile)
+        hook_src = [s["text"] for s in sents]
         boost = float((st.get("category_boost") or {}).get(cat, 1.0))
         if abs(boost - 1.0) > 0.01:          # learned from this user's own posted clips; bounded so it nudges, not rules
             eng = float(np.clip(eng * boost, 0, 1))
@@ -265,7 +305,7 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
                       "viral_potential": round(float(np.clip(eng * (0.75 + 0.25 * hook), 0, 1)) * 100, 1),
                       "confidence": round(conf, 2), "suggested_duration": round(dur, 1),
                       "category": cat, "description": desc, "reason": reason, "scored_by": "heuristic",
-                      "flags": semantic.content_flags(cw, w["start"], signals, profile), **copy})
+                      "flags": semantic.content_flags(cw, w["start"], signals, profile), "_sents": hook_src, **copy})
 
     cands = dedupe(cands)[: st["max_highlights"]]
     # quality over quantity: keep the clear winners, drop the long tail of merely-above-average moments
@@ -317,6 +357,17 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
             c.pop("id", None)
 
     cands.sort(key=lambda x: -x["engagement_score"])
+    used: set[str] = set()
+    used_titles: set[str] = set()
     for i, c in enumerate(cands):
         c["rank"] = i + 1
+        if c["title"].lower() in used_titles:   # same for titles: take the next grounded option that is still free
+            c["title"] = next((t for t in c["title_options"] if t.lower() not in used_titles), c["title"])
+        used_titles.add(c["title"].lower())
+        sents = c.pop("_sents", [])
+        v = 0                                   # clips from one recording should not all open with the same line
+        while c["signals"].get("hook_text", "").lower() in used and v < 6:
+            v += 1
+            c["signals"]["hook_text"] = semantic.make_hook(sents, c["signals"], c["category"], st["streamer"], profile, variant=v)
+        used.add(c["signals"].get("hook_text", "").lower())
     return cands, meta

@@ -340,3 +340,143 @@ def test_font_names_same_with_and_without_fontconfig():
 def test_windows_paths_are_escaped_for_ffmpeg():
     assert render._fesc(r"C:\Users\Jack\ClipForgeData\clips\clip_1.ass") == r"C\:/Users/Jack/ClipForgeData/clips/clip_1.ass"
     assert render._fesc("/data/clips/it's.ass") == "/data/clips/it\\'s.ass"
+
+
+# ---------------------------------------------------------------- off-stream detection (ads, player controls)
+import numpy as np  # noqa: E402
+from app.services import clipmaker, offstream  # noqa: E402
+
+
+def _stream_frames(n=120, breaks=((40, 52),)):
+    """Synthetic recording: moving 'gameplay' noise with a fixed overlay; during a break the whole frame changes."""
+    rng = np.random.default_rng(3)
+    g = rng.integers(0, 255, size=(n, offstream.GH, offstream.GW)).astype(np.uint8)
+    g[:, 2:10, 70:94] = 240          # counter overlay
+    g[:, 34:54, 68:96] = 60          # webcam area
+    for a, b in breaks:
+        g[a:b] = rng.integers(0, 40, size=(b - a, offstream.GH, offstream.GW))
+    return g
+
+
+def test_offstream_layout_break_found():
+    g = _stream_frames()
+    segs = offstream.segments(g, np.zeros(len(g), dtype=bool), 1.0, 120.0)
+    assert len(segs) == 1 and segs[0]["reason"] == "ad_or_break"
+    assert 38 <= segs[0]["s"] <= 40 and 52 <= segs[0]["e"] <= 54
+
+
+def test_offstream_quiet_without_overlays_or_breaks():
+    rng = np.random.default_rng(4)
+    noise = rng.integers(0, 255, size=(120, offstream.GH, offstream.GW)).astype(np.uint8)
+    assert offstream.segments(noise, np.zeros(120, dtype=bool), 1.0, 120.0) == []        # nothing fixed to anchor on
+    assert offstream.segments(_stream_frames(breaks=()), np.zeros(120, dtype=bool), 1.0, 120.0) == []
+    # a one-second glitch is not an ad break
+    assert offstream.segments(_stream_frames(breaks=((40, 41),)), np.zeros(120, dtype=bool), 1.0, 120.0) == []
+
+
+def test_offstream_unreliable_read_is_discarded():
+    g = _stream_frames(breaks=((10, 45), (60, 100)))
+    assert offstream.segments(g, np.zeros(len(g), dtype=bool), 1.0, 120.0) == []
+
+
+def test_player_bar():
+    f = np.full((offstream.SH, offstream.SW, 3), 90, dtype=np.uint8)
+    assert not offstream.player_bar(f)
+    live = f.copy()
+    live[300:302, :, :] = (230, 20, 20)                      # full-width red line: live stream
+    assert offstream.player_bar(live)
+    vod = f.copy()
+    vod[300:302, :120, :] = (230, 20, 20)                    # played part from the left edge
+    assert offstream.player_bar(vod)
+    car = f.copy()
+    car[285:320, 100:400, :] = (230, 20, 20)                 # a big red object is game content
+    assert not offstream.player_bar(car)
+    mid = f.copy()
+    mid[300:302, 200:320, :] = (230, 20, 20)                 # short red run away from the left edge
+    assert not offstream.player_bar(mid)
+    bars = np.zeros(60, dtype=bool)
+    bars[20:26] = True
+    segs = offstream.segments(_stream_frames(n=60, breaks=()), bars, 1.0, 60.0)
+    assert [s["reason"] for s in segs] == ["player_controls"]
+
+
+def test_clear_of_trims_or_drops():
+    w = {"start": 10.0, "end": 40.0, "peak": 25.0, "starts_clean": True, "ends_clean": True}
+    assert highlights.clear_of(w, [], 15) is w
+    assert highlights.clear_of(w, [{"s": 50, "e": 60}], 15) is w
+    t = highlights.clear_of(w, [{"s": 36, "e": 45}], 15)                # ad after the peak: end early
+    assert t["end"] < 36 and t["start"] == 10.0 and not t["ends_clean"] and t["starts_clean"]
+    t = highlights.clear_of(w, [{"s": 5, "e": 14}], 15)                 # ad before the peak: start late
+    assert t["start"] > 14 and t["end"] == 40.0
+    assert highlights.clear_of(w, [{"s": 20, "e": 30}], 15) is None     # the peak itself is the ad
+    assert highlights.clear_of(w, [{"s": 12, "e": 22}, {"s": 30, "e": 45}], 15) is None   # nothing long enough left
+
+
+def test_highlights_never_touch_offstream():
+    # a small stream: a loud, wordy moment at 60 s (an "ad") and another at 150 s
+    n = 240
+    ex = np.zeros(n)
+    ex[55:70] = 1.0
+    ex[145:160] = 0.9
+    audio = {"seconds": n, "excite": ex.tolist(), "onset": (ex * 0.5).tolist(), "laugh": (ex * 0.6).tolist(),
+             "scream": [0.0] * n}
+    words = []
+    for base in (52, 142):
+        for i, t in enumerate("oh my god no way that is insane what just happened wow".split()):
+            words.append({"s": base + i * 1.2, "e": base + i * 1.2 + 0.5, "w": t})
+    scenes, dur = [], float(n)
+    base, _ = highlights.find_highlights(words, audio, scenes, [], dur, {"use_llm": False, "min_score": 0})
+    assert any(c["start"] < 70 and c["end"] > 55 for c in base)
+    off = [{"s": 50.0, "e": 72.0, "reason": "ad_or_break"}]
+    got, meta = highlights.find_highlights(words, audio, scenes, [], dur, {"use_llm": False, "min_score": 0, "offstream": off})
+    assert got and all(c["end"] <= 50.0 or c["start"] >= 72.0 for c in got)
+    assert all("insane" not in c["transcript"] or c["start"] >= 72 for c in got)
+    assert meta["offstream_seconds"] == 22.0
+
+
+def test_hooks_and_titles_differ_across_one_recording():
+    n = 400
+    ex = np.zeros(n)
+    words = []
+    for k, base in enumerate((40, 120, 200, 280, 360)):
+        ex[base:base + 8] = 1.0
+        said = ["look at that truck", "why is he running", "the boat just sank", "who parked this here", "that jump was close"][k]
+        for i, t in enumerate((said + " ha ha").split()):
+            words.append({"s": base + i * 0.8, "e": base + i * 0.8 + 0.4, "w": t})
+    audio = {"seconds": n, "excite": ex.tolist(), "onset": (ex * 0.4).tolist(), "laugh": ex.tolist(), "scream": [0.0] * n}
+    got, _ = highlights.find_highlights(words, audio, [], [], float(n), {"use_llm": False, "min_score": 0, "streamer": "Tomo"})
+    assert len(got) >= 3
+    hooks = [c["signals"]["hook_text"] for c in got[:3]]
+    assert len(set(hooks)) == 3 and all("Tomo" in h for h in hooks)
+    assert len({c["title"] for c in got[:3]}) >= 2
+
+
+def test_make_hook_variants():
+    prof = semantic.load_profile("gta6")
+    a = semantic.make_hook([], {"laugh": 0.9}, "police", "Tomo", prof)
+    b = semantic.make_hook([], {"laugh": 0.9}, "police", "Tomo", prof, variant=1)
+    assert a != b and "Tomo" in a and "Tomo" in b
+    assert semantic.make_hook([], {}, "nonsense", "", prof).startswith("Streamer")
+
+
+def test_facecam_rect_is_clipped_not_shifted():
+    # a webcam in the bottom-right corner: the rect must stay around the face and stop at the picture edge
+    r = facecam.face_to_cam_rect({"cx": 0.863, "cy": 0.834, "w": 0.105, "h": 0.23}, 16 / 9)
+    assert abs(r["x"] + r["w"] - 1.0) < 1e-6 and abs(r["y"] + r["h"] - 1.0) < 1e-6
+    assert 0.68 < r["x"] < 0.74 and 0.55 < r["y"] < 0.62
+
+
+def test_default_layout_slides_gameplay_off_the_webcam():
+    V = NS
+    assert clipmaker.default_layout(V(facecam=None, width=1920, height=1080))[0] == "blurfit"
+    lay, lp, cap = clipmaker.default_layout(V(facecam={"x": 0.705, "y": 0.583, "w": 0.295, "h": 0.417}, width=1920, height=1080))
+    assert lay == "split" and 0.40 < lp["focus_x"] < 0.46 and cap["hook_y"] > 0.34
+    p = render.build_panels(lay, lp, 1920, 1080, {"x": 0.705, "y": 0.583, "w": 0.295, "h": 0.417})
+    game = p["panels"][1]["src"]
+    assert game["x"] + game["w"] <= 0.705 * 1920 + 2          # gameplay crop ends where the webcam starts
+    lay, lp, _ = clipmaker.default_layout(V(facecam={"x": 0.0, "y": 0.6, "w": 0.28, "h": 0.4}, width=1920, height=1080))
+    game = render.build_panels(lay, lp, 1920, 1080, {"x": 0.0, "y": 0.6, "w": 0.28, "h": 0.4})["panels"][1]["src"]
+    assert game["x"] >= 0.28 * 1920 - 2
+    # a webcam in the middle top (not at a side edge of the crop) leaves the crop centred
+    lay, lp, _ = clipmaker.default_layout(V(facecam={"x": 0.8, "y": 0.0, "w": 0.2, "h": 0.25}, width=1920, height=1080))
+    assert "focus_x" not in lp

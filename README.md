@@ -166,8 +166,21 @@ sound-event model.
 
 Keep the black window open while you work; closing it stops ClipForge. Recordings, clips and the database are kept in
 `%USERPROFILE%\ClipForgeData`, outside the program folder, so replacing the folder with a newer ZIP keeps your data.
-The Windows start file has not been run on a Windows machine by its author; the Python code paths it uses are covered by
-the unit tests on Linux.
+If winget cannot install FFmpeg (antivirus tools sometimes block it), put `ffmpeg.exe` and `ffprobe.exe` in
+`tools\ffmpeg\bin` inside the program folder; ClipForge uses them from there. If your antivirus removes the start file,
+run the same steps by hand in a terminal opened in the program folder: `py -3 -m venv .venv`,
+`.venv\Scripts\python -m pip install -r requirements.txt`, `cd backend`,
+`..\.venv\Scripts\python -m uvicorn app.main:app --port 8000` (data then lives in the `data` folder).
+
+Upload, analysis (faster-whisper) and rendering have been run on Windows 11 with Python 3.14 through the manual
+steps above. The start file itself has not been run on Windows by its author.
+
+## Recording a stream off a video player
+
+A screen recording picks up ad breaks, buffering screens and the player's own controls. The analysis looks for them
+(fixed overlays such as the webcam disappearing, or the red progress line showing), marks them on the timeline, and
+never builds a highlight on top of them. A clip you cut by hand across one is flagged for review. Detection is
+conservative and has been tuned on one real recording so far: watch each clip before posting.
 
 ## Free hosting on GitHub Codespaces
 
