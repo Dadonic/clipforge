@@ -326,3 +326,17 @@ def test_migrations_upgrade_old_database_in_place(tmp_path):
         row = c.execute(text("SELECT name, min_views, auto_hook, cta_onscreen FROM campaigns")).fetchone()
     assert tuple(row) == ("kept", 0, 1, "")
     assert {m[0] for m in dbm.COLUMN_MIGRATIONS} <= {"campaigns", "clips", "submissions"}
+
+
+# ---------------------------------------------------------------- Windows support
+def test_font_names_same_with_and_without_fontconfig():
+    from app import config
+    for f in sorted(config.FONTS_DIR.iterdir()):
+        if f.suffix.lower() in (".ttf", ".otf"):
+            assert captions._font_names_pillow(f) == captions._font_names(f), f.name
+    assert {x["label"] for x in captions.list_fonts()} >= {"Poppins Bold"}
+
+
+def test_windows_paths_are_escaped_for_ffmpeg():
+    assert render._fesc(r"C:\Users\Jack\ClipForgeData\clips\clip_1.ass") == r"C\:/Users/Jack/ClipForgeData/clips/clip_1.ass"
+    assert render._fesc("/data/clips/it's.ass") == "/data/clips/it\\'s.ass"

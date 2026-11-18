@@ -209,7 +209,10 @@ def run_render(job: Job, rep: Reporter) -> None:
         log_activity(db, c.user_id, "render", f"Rendered clip “{c.title}” ({meta['duration']:.0f}s)")
         db.commit()
     if old and old != str(out) and os.path.exists(old):
-        os.remove(old)
+        try:
+            os.remove(old)
+        except OSError:
+            pass            # still open in a player (Windows); leave it
 
 
 # --------------------------------------------------------------------------- import from a direct file URL
@@ -320,7 +323,10 @@ def run_forever(stop: threading.Event | None = None, poll: float = 1.0) -> None:
 def delete_video_files(video: Video) -> None:
     shutil.rmtree(config.WORK_DIR / str(video.id), ignore_errors=True)
     if video.path and os.path.exists(video.path):
-        os.remove(video.path)
+        try:
+            os.remove(video.path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

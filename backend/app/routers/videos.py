@@ -69,8 +69,8 @@ def create_video(body: VideoIn, db: Session = Depends(get_db), user: User = Depe
     if body.size <= 0:
         raise HTTPException(400, "File is empty")
     camp = _campaign_or_none(db, user, body.campaign_id)
-    free = os.statvfs(config.UPLOAD_DIR)
-    if free.f_bavail * free.f_frsize < body.size * 1.3:
+    import shutil
+    if shutil.disk_usage(config.UPLOAD_DIR).free < body.size * 1.3:
         raise HTTPException(507, "Not enough disk space on the server for this recording.")
     v = Video(user_id=user.id, filename=body.filename[:300], title=(body.title or Path(body.filename).stem)[:300],
               streamer=body.streamer or (camp.streamer if camp else ""), campaign_id=body.campaign_id,
@@ -220,7 +220,10 @@ def delete_video(vid: int, db: Session = Depends(get_db), user: User = Depends(c
         raise HTTPException(409, "This recording is being processed. Wait for the job to finish, then delete.")
     for c in db.query(Clip).filter(Clip.video_id == vid).all():
         if c.output_path and os.path.exists(c.output_path):
-            os.remove(c.output_path)
+            try:
+                os.remove(c.output_path)
+            except OSError:
+                pass        # Windows refuses to delete a file that is still being played; it is orphaned, not fatal
         db.delete(c)
     db.query(Highlight).filter(Highlight.video_id == vid).delete()
     db.query(Job).filter(Job.video_id == vid).delete()
