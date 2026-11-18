@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from . import semantic
 
 DEFAULTS = {"min_duration": 15.0, "max_duration": 60.0, "max_highlights": 40, "streamer": "", "profile": "gta6",
-            "use_llm": True, "extra_hashtags": [], "min_score": 30.0}
+            "use_llm": True, "extra_hashtags": [], "min_score": 30.0, "category_boost": {}}
 
 
 def build_sentences(words: list[dict], max_gap: float = 0.8, max_len: float = 14.0) -> list[dict]:
@@ -254,6 +254,12 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
         quote = next((s["text"] for s in sorted(sents, key=lambda s: -semantic.text_score(s["text"], profile))
                       if len(s["text"].split()) >= 3), "")
         desc = (f"{label}. " + (f"Streamer says: “{quote[:140]}”" if quote else "No clear speech in this window."))
+        signals["hook_text"] = semantic.make_hook([s["text"] for s in sents], signals, cat, st["streamer"], profile)
+        boost = float((st.get("category_boost") or {}).get(cat, 1.0))
+        if abs(boost - 1.0) > 0.01:          # learned from this user's own posted clips; bounded so it nudges, not rules
+            eng = float(np.clip(eng * boost, 0, 1))
+            reason += f" Your posted clips of this type have run {'above' if boost > 1 else 'below'} your average, so it is ranked slightly {'higher' if boost > 1 else 'lower'}."
+            signals["learned_boost"] = round(boost, 2)
         cands.append({**w, "transcript": transcript, "signals": signals, "standalone": round(standalone, 2),
                       "engagement_score": round(eng * 100, 1),
                       "viral_potential": round(float(np.clip(eng * (0.75 + 0.25 * hook), 0, 1)) * 100, 1),
@@ -295,6 +301,8 @@ def find_highlights(words: list[dict], audio: dict, scenes: list[float], chat: l
                     c["reason"] = str(r["why"])[:400] + " " + c["reason"]
                 if r.get("hook"):
                     c["hook"] = str(r["hook"])[:300]
+                if r.get("hook_text"):
+                    c["signals"]["hook_text"] = str(r["hook_text"])[:60]
                 if r.get("category") in profile["categories"]:
                     c["category"] = r["category"]
                 codes = {f["code"] for f in c["flags"]}

@@ -94,7 +94,7 @@ class MePatch(BaseModel):
 
 
 SETTING_KEYS = {"default_layout", "default_caption_style", "default_caption_params", "quality", "watermark",
-                "min_duration", "max_duration", "max_highlights", "use_llm"}
+                "min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips", "auto_hook"}
 
 
 @app.patch("/api/auth/me")

@@ -4,7 +4,7 @@ export function Settings({ user, setUser, sys }) {
   const s0 = user.settings || {};
   const [name, setName] = useState(user.name || "");
   const [s, setS] = useState({ default_layout: s0.default_layout || "", default_caption_style: s0.default_caption_style || "", quality: s0.quality || "standard",
-    watermark: s0.watermark || "", min_duration: s0.min_duration || 15, max_duration: s0.max_duration || 60, max_highlights: s0.max_highlights || 40 });
+    watermark: s0.watermark || "", min_duration: s0.min_duration || 15, max_duration: s0.max_duration || 60, max_highlights: s0.max_highlights || 40, auto_clips: s0.auto_clips ?? 10, auto_hook: s0.auto_hook !== false });
   const [pw, setPw] = useState({ current_password: "", new_password: "" });
   if (!sys) return html`<${Loading} />`;
   const up = k => e => setS({ ...s, [k]: e.target.type === "number" ? +e.target.value : e.target.value });
@@ -24,6 +24,8 @@ export function Settings({ user, setUser, sys }) {
           <${Field} label="Default watermark"><input value=${s.watermark} onInput=${up("watermark")} placeholder="Optional" /><//>
           <${Field} label="Shortest clip (s)"><input type="number" min="5" max="180" value=${s.min_duration} onInput=${up("min_duration")} /><//>
           <${Field} label="Longest clip (s)"><input type="number" min="5" max="180" value=${s.max_duration} onInput=${up("max_duration")} /><//>
+          <${Field} label="Clips to make automatically per upload" hint="0 = only rank the moments"><input type="number" min="0" max="30" value=${s.auto_clips} onInput=${up("auto_clips")} /><//>
+          <label class="f inline" style="align-self:end;padding-bottom:6px"><input type="checkbox" checked=${s.auto_hook} onChange=${e => setS({ ...s, auto_hook: e.target.checked })} /><span>Write hook text automatically</span></label>
         </div></div>
       <div class="card col"><h2>Account</h2>
         <div class="fields"><${Field} label="Name"><input value=${name} onInput=${e => setName(e.target.value)} /><//><${Field} label="Email"><input value=${user.email} disabled /><//></div>

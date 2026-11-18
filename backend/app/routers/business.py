@@ -37,8 +37,25 @@ def own_campaign(db, user, cid) -> Campaign:
     return c
 
 
+def sub_block(s: Submission, camp: Campaign | None) -> str | None:
+    """Why this submission cannot earn yet under the campaign's own rules (None = nothing blocking)."""
+    if not camp:
+        return None
+    if camp.min_views and (s.views or 0) < camp.min_views:
+        return f"Below the {camp.min_views:,}-view minimum"
+    if camp.min_tier1_pct:
+        if s.tier1_pct is None:
+            return "Audience share not recorded yet"
+        if s.tier1_pct < camp.min_tier1_pct:
+            return f"Audience {s.tier1_pct:g}% is under the required {camp.min_tier1_pct:g}%"
+    return None
+
+
 def sub_est(s: Submission, camp: Campaign | None) -> float:
-    return estimated_earnings(s.approved_views, camp.payout_per_1k if camp else 0, camp.max_payout_per_clip if camp else None)
+    if camp and camp.min_tier1_pct and s.tier1_pct is not None and s.tier1_pct < camp.min_tier1_pct:
+        return 0.0
+    return estimated_earnings(s.approved_views, camp.payout_per_1k if camp else 0, camp.max_payout_per_clip if camp else None,
+                              (camp.min_views or 0) if camp else 0)
 
 
 def campaign_out(db, c: Campaign) -> dict:
@@ -78,6 +95,12 @@ class CampaignIn(BaseModel):
     require_attribution: bool | None = None
     notes: str | None = None
     preset: dict | None = None
+    min_views: int | None = None
+    min_tier1_pct: float | None = None
+    submit_within_min: int | None = None
+    keep_live_days: int | None = None
+    cta_onscreen: str | None = None
+    auto_hook: bool | None = None
 
 
 def _apply_campaign(c: Campaign, body: CampaignIn):
@@ -86,9 +109,16 @@ def _apply_campaign(c: Campaign, body: CampaignIn):
         raise HTTPException(400, "status must be lead, active, paused or ended")
     if "deadline" in data:
         data["deadline"] = _dt(data["deadline"])
-    for k in ("payout_per_1k", "max_budget", "max_payout_per_clip", "min_duration", "max_duration"):
+    for k in ("payout_per_1k", "max_budget", "max_payout_per_clip", "min_duration", "max_duration", "min_views",
+              "min_tier1_pct", "submit_within_min", "keep_live_days"):
         if data.get(k) is not None and data[k] < 0:
             raise HTTPException(400, f"{k} cannot be negative")
+    if data.get("min_tier1_pct") is not None and data["min_tier1_pct"] > 100:
+        raise HTTPException(400, "Audience requirement is a percentage (0-100)")
+    if "min_views" in data and data["min_views"] is None:
+        data["min_views"] = 0
+    if "auto_hook" in data and data["auto_hook"] is None:
+        data["auto_hook"] = True
     if "required_hashtags" in data and data["required_hashtags"] is not None:
         data["required_hashtags"] = ["#" + t.strip().lstrip("#") for t in data["required_hashtags"] if t.strip().strip("#")]
     if "approved_platforms" in data and data["approved_platforms"] is not None:
@@ -152,6 +182,8 @@ def sub_out(db, s: Submission) -> dict:
     d["clip_title"] = clip.title if clip else None
     d["payout_per_1k"] = camp.payout_per_1k if camp else 0
     d["estimated_earnings"] = sub_est(s, camp)
+    d["blocked"] = sub_block(s, camp)
+    d["needs_tier1"] = bool(camp and camp.min_tier1_pct)
     return d
 
 
@@ -167,6 +199,7 @@ class SubIn(BaseModel):
     payment_date: str | None = None
     submitted_at: str | None = None
     notes: str | None = None
+    tier1_pct: float | None = None
 
 
 def _apply_sub(db, user, s: Submission, body: SubIn, creating: bool):
@@ -175,9 +208,11 @@ def _apply_sub(db, user, s: Submission, body: SubIn, creating: bool):
         raise HTTPException(400, "payment_status must be pending, approved, paid or rejected")
     if "platform" in data and data["platform"] not in PLATFORMS:
         raise HTTPException(400, f"platform must be one of: {', '.join(PLATFORMS)}")
-    for k in ("views", "approved_views", "confirmed_earnings"):
+    for k in ("views", "approved_views", "confirmed_earnings", "tier1_pct"):
         if data.get(k) is not None and data[k] < 0:
             raise HTTPException(400, f"{k} cannot be negative")
+    if data.get("tier1_pct") is not None and data["tier1_pct"] > 100:
+        raise HTTPException(400, "Audience share is a percentage (0-100)")
     for k in ("payment_date", "submitted_at"):
         if k in data:
             data[k] = _dt(data[k])
@@ -265,7 +300,8 @@ _COLS = {"url": ("url", "submission_url", "link", "post_url", "video_url"),
          "approved_views": ("approved_views", "verified_views", "eligible_views", "paid_views"),
          "confirmed_earnings": ("confirmed_earnings", "earnings", "payout", "paid", "amount", "earned"),
          "payment_status": ("payment_status", "status"),
-         "payment_date": ("payment_date", "paid_at", "paid_date", "date")}
+         "payment_date": ("payment_date", "paid_at", "paid_date", "date"),
+         "tier1_pct": ("tier1_pct", "tier_1_pct", "tier1", "tier_1", "audience_pct", "tier_1_audience")}
 
 
 @router.post("/submissions/import-csv")
@@ -307,6 +343,9 @@ async def import_csv(file: UploadFile, db: Session = Depends(get_db), user: User
                 patch["approved_views"] = av
             if ce is not None:
                 patch["confirmed_earnings"] = ce
+            t1 = num(row, "tier1_pct", lambda x: float(x.replace("%", "")))
+            if t1 is not None:
+                patch["tier1_pct"] = t1
             st = str(row.get(cmap["payment_status"] or "", "")).strip().lower()
             if st in ("pending", "approved", "paid", "rejected"):
                 patch["payment_status"] = st

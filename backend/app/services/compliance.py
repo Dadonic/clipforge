@@ -10,7 +10,9 @@ def _norm_tag(t: str) -> str:
     return "#" + re.sub(r"[^a-z0-9_]", "", t.lower())
 
 
-def estimated_earnings(approved_views: int, rate_per_1k: float, cap: float | None = None) -> float:
+def estimated_earnings(approved_views: int, rate_per_1k: float, cap: float | None = None, min_views: int = 0) -> float:
+    if min_views and (approved_views or 0) < min_views:
+        return 0.0                      # below the campaign's minimum a clip earns nothing
     v = (max(0, approved_views or 0) / 1000.0) * (rate_per_1k or 0.0)
     if cap:
         v = min(v, cap)
@@ -62,11 +64,18 @@ def check_clip(clip, video, campaign, campaign_estimated_total: float = 0.0) -> 
         add("hashtags", "Required hashtags present", "fail" if missing else "pass",
             ("Missing: " + " ".join(missing)) if missing else " ".join(campaign.required_hashtags))
 
-    text = f"{clip.title} {clip.description}".lower()
+    cp = clip.caption_params or {}
+    onscreen = f"{cp.get('hook_text') or ''} {cp.get('cta_text') or ''}".lower()
+    text = f"{clip.title} {clip.description} {onscreen}".lower()
     if (campaign.required_cta or "").strip():
         ok = campaign.required_cta.strip().lower() in text
         add("cta", "Required caption / CTA included", "pass" if ok else "fail",
-            "" if ok else f"Add “{campaign.required_cta.strip()}” to the title or description.")
+            "" if ok else f"Add \u201c{campaign.required_cta.strip()}\u201d to the description or the on-screen text.")
+    want_card = (getattr(campaign, "cta_onscreen", "") or "").strip()
+    if want_card:
+        ok = want_card.lower() in onscreen
+        add("cta_card", "Call to action shown on screen", "pass" if ok else "fail",
+            "" if ok else f"Put \u201c{want_card}\u201d in the end card or hook text.")
 
     if campaign.require_watermark:
         wm = (clip.watermark_text or "").strip()

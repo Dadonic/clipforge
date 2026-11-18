@@ -145,6 +145,27 @@ def heuristic_copy(sentences: list[str], signals: dict, category: str, label: st
     return {"title": uniq[0], "title_options": uniq[:4], "hook": hook, "hashtags": tags}
 
 
+HOOK_BY_CATEGORY = {
+    "police": "{who} vs the cops in GTA 6", "driving": "{who}'s wildest GTA 6 drive", "fail": "{who}'s GTA 6 fail",
+    "physics": "GTA 6 physics broke for {who}", "npc_interaction": "{who} meets a GTA 6 NPC",
+    "discovery": "{who} found this in GTA 6", "commentary": "{who} on GTA 6",
+}
+
+
+def make_hook(sentences: list[str], signals: dict, category: str, streamer: str, profile: dict, max_len: int = 46) -> str:
+    """Opening hook line, built only from what was said or measured. Names the streamer, because most
+    campaigns require the streamer's name on screen."""
+    who = streamer.strip() or "Streamer"
+    quote = _best_quote(sentences, profile, max_len=max_len - len(who) - 4)
+    if quote and text_score(quote, profile) >= 0.3 and len(quote.split()) >= 2:
+        return f"{who}: \u201c{quote}\u201d"
+    if signals.get("laugh", 0) > 0.45:
+        return f"{who} can't stop laughing"
+    if signals.get("scream", 0) > 0.45:
+        return f"{who} was NOT ready for this"
+    return HOOK_BY_CATEGORY.get(category, "{who}'s GTA 6 moment").format(who=who)[:max_len + 10]
+
+
 # --------------------------------------------------------------------------- LLM (optional)
 def llm_available() -> bool:
     return bool(config.LLM_API_KEY) or "localhost" in config.LLM_BASE_URL or "127.0.0.1" in config.LLM_BASE_URL
@@ -158,6 +179,7 @@ If the transcript is empty or unclear, say so and score low rather than guessing
 Return JSON: {"items":[{"id":int,"entertaining":0-100,"standalone":0-100,
 "title_options":[3 short titles grounded in the transcript],"description":"one factual sentence",
 "why":"one sentence on why a viewer would care","hook":"which line should open the clip",
+"hook_text":"on-screen opening line, max 8 words, that names the streamer and states what really happens",
 "category":"npc_interaction|physics|driving|police|discovery|fail|reaction|commentary|moment",
 "spoiler_risk":bool,"graphic_violence":bool}]}
 standalone = can someone who never saw the stream follow it. Loud is not automatically entertaining."""
