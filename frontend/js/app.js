@@ -51,6 +51,12 @@ function App() {
   const route = useRoute();
   const [sys, setSys] = useState(null);
   const [active, setActive] = useState(0);
+  const [offline, setOffline] = useState(false);
+  useEffect(() => {
+    const off = () => setOffline(true), on = () => setOffline(false);
+    window.addEventListener("cf-offline", off); window.addEventListener("cf-online", on);
+    return () => { window.removeEventListener("cf-offline", off); window.removeEventListener("cf-online", on); };
+  }, []);
   useEffect(() => {
     api("/auth/me").then(setUser).catch(() => setUser(null));
     const out = () => setUser(null);
@@ -91,7 +97,8 @@ function App() {
       <div class="foot"><div class="trunc" style="font-weight:500">${user.name || user.email}</div>
         <button class="nav" style="padding:6px 0;margin-top:2px" onClick=${logout}><${Icon} n="out" />Sign out</button></div>
     </nav>
-    <main>${view}</main>
+    <main>${offline && html`<div class="note warn" role="alert" style="margin-bottom:14px"><b>ClipForge's server is asleep.</b> If you run it on GitHub Codespaces, open the Codespace tab, restart it, wait a minute, then
+      <button class="btn sm" style="margin-left:6px" onClick=${() => location.reload()}>Reload</button><div class="small" style="margin-top:4px">Your account, campaigns and clips are safe. A campaign you were typing is kept as a draft.</div></div>`}${view}</main>
     <nav class="tabbar" aria-label="Main">
       ${NAV.map(([p, l, ic]) => html`<a class=${top === p ? "on" : ""} href=${"#" + p}><${Icon} n=${ic} />${SHORT[p]}</a>`)}
     </nav>

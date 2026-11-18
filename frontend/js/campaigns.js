@@ -1,4 +1,4 @@
-import { html, useState, api, fail, toast, useLoad, Loading, ErrorBox, Field, Status, Modal, Icon, Progress, money, int, dateOnly } from "./core.js";
+import { html, useState, draft, api, fail, toast, useLoad, Loading, ErrorBox, Field, Status, Modal, Icon, Progress, money, int, dateOnly } from "./core.js";
 
 const BLANK = { name: "", streamer: "", whop_url: "", instructions: "", payout_per_1k: 1, max_budget: "", max_payout_per_clip: "", min_duration: 15, max_duration: 60,
   required_hashtags: "", required_cta: "", approved_platforms: [], prohibited: "", submission_instructions: "", deadline: "", status: "active",
@@ -19,11 +19,12 @@ function toBody(f) {
 }
 
 function CampaignForm({ initial, sys, onClose }) {
-  const [f, setF] = useState(toForm(initial || {}));
+  const [f, setF0] = useState(() => (!initial && draft.get("campaign")) || toForm(initial || {}));
   const [busy, setBusy] = useState(false);
+  const setF = v => { setF0(v); if (!initial) draft.set("campaign", v); };
   const up = k => e => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const plat = p => setF({ ...f, approved_platforms: f.approved_platforms.includes(p) ? f.approved_platforms.filter(x => x !== p) : [...f.approved_platforms, p] });
-  const save = async () => { setBusy(true); try { await api(initial ? `/campaigns/${initial.id}` : "/campaigns", { method: initial ? "PATCH" : "POST", body: toBody(f) }); toast("Campaign saved"); onClose(true); } catch (e) { fail(e); } finally { setBusy(false); } };
+  const save = async () => { setBusy(true); try { await api(initial ? `/campaigns/${initial.id}` : "/campaigns", { method: initial ? "PATCH" : "POST", body: toBody(f) }); if (!initial) draft.clear("campaign"); toast("Campaign saved"); onClose(true); } catch (e) { fail(e); } finally { setBusy(false); } };
   return html`<${Modal} title=${initial ? "Edit campaign" : "Add a campaign"} onClose=${() => onClose(false)}>
     <p class="muted small" style="margin-bottom:12px">Copy the details from the campaign's page on Whop. These rules drive the compliance check and the earnings maths.</p>
     <div class="fields">
