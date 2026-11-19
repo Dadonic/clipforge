@@ -480,3 +480,45 @@ def test_default_layout_slides_gameplay_off_the_webcam():
     # a webcam in the middle top (not at a side edge of the crop) leaves the crop centred
     lay, lp, _ = clipmaker.default_layout(V(facecam={"x": 0.8, "y": 0.0, "w": 0.2, "h": 0.25}, width=1920, height=1080))
     assert "focus_x" not in lp
+
+
+def test_llm_rescore_waits_out_rate_limits(monkeypatch):
+    import httpx
+    calls = {"n": 0, "slept": []}
+
+    class Resp:
+        def __init__(self, code, body=None, headers=None):
+            self.status_code, self._b, self.headers = code, body or {}, headers or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("err", request=None, response=None)
+
+        def json(self):
+            return self._b
+
+    class Client:
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return Resp(429, headers={"retry-after": "7"})
+            ids = [c["id"] for c in __import__("json").loads(json["messages"][1]["content"])["candidates"]]
+            return Resp(200, {"usage": {"prompt_tokens": 10, "completion_tokens": 5}, "choices": [{"message": {
+                "content": __import__("json").dumps({"items": [{"id": i, "entertaining": 80} for i in ids]})}}]})
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    monkeypatch.setattr(semantic, "_sleep", lambda s: calls["slept"].append(s))
+    monkeypatch.setattr(semantic.config, "LLM_BATCH", 2)
+    cands = [{"id": i, "start": 0, "end": 20, "transcript": "a b c d e", "signals": {}} for i in range(5)]
+    out, usage = semantic.llm_rescore(cands, "Tomo")
+    assert sorted(out) == [0, 1, 2, 3, 4] and "error" not in usage
+    assert usage["calls"] == 3 and calls["n"] == 4 and calls["slept"] == [7.0] and usage["waited_s"] == 7.0

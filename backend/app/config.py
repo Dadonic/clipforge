@@ -70,6 +70,7 @@ OPENAI_TRANSCRIBE_PRICE_PER_MIN = float(_env("OPENAI_TRANSCRIBE_PRICE_PER_MIN", 
 LLM_BASE_URL = _env("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_API_KEY = _env("LLM_API_KEY")
 LLM_MODEL = _env("LLM_MODEL", "gpt-4o-mini")
+LLM_BATCH = max(1, int(_env("LLM_BATCH", "8")))           # candidates per request; lower it for free tiers with small token limits
 LLM_PRICE_IN_PER_M = float(_env("LLM_PRICE_IN_PER_M", "0.15"))
 LLM_PRICE_OUT_PER_M = float(_env("LLM_PRICE_OUT_PER_M", "0.60"))
 

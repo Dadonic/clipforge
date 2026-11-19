@@ -7,6 +7,7 @@ Neither is allowed to describe events that are not in the transcript or the meas
 """
 import json
 import re
+import time
 from functools import lru_cache
 
 from .. import config
@@ -183,6 +184,9 @@ def make_hook(sentences: list[str], signals: dict, category: str, streamer: str,
 
 
 # --------------------------------------------------------------------------- LLM (optional)
+_sleep = time.sleep
+
+
 def llm_available() -> bool:
     return bool(config.LLM_API_KEY) or "localhost" in config.LLM_BASE_URL or "127.0.0.1" in config.LLM_BASE_URL
 
@@ -211,14 +215,24 @@ def llm_rescore(cands: list[dict], streamer: str) -> tuple[dict[int, dict], dict
         headers["Authorization"] = f"Bearer {config.LLM_API_KEY}"
     try:
         with httpx.Client(timeout=120) as cl:
-            for i in range(0, len(cands), 8):
+            for i in range(0, len(cands), config.LLM_BATCH):
                 batch = [{"id": c["id"], "duration": round(c["end"] - c["start"], 1),
-                          "transcript": c["transcript"][:1400], "signals": c["signals"]} for c in cands[i:i + 8]]
+                          "transcript": c["transcript"][:1400], "signals": c["signals"]}
+                         for c in cands[i:i + config.LLM_BATCH]]
                 body = {"model": config.LLM_MODEL, "temperature": 0.2,
                         "response_format": {"type": "json_object"},
                         "messages": [{"role": "system", "content": _SYSTEM},
                                      {"role": "user", "content": json.dumps({"streamer": streamer, "candidates": batch})}]}
-                r = cl.post(config.LLM_BASE_URL.rstrip("/") + "/chat/completions", headers=headers, json=body)
+                for attempt in range(6):          # free tiers answer 429 when the per-minute allowance is used up
+                    r = cl.post(config.LLM_BASE_URL.rstrip("/") + "/chat/completions", headers=headers, json=body)
+                    if r.status_code != 429 or attempt == 5:
+                        break
+                    try:
+                        wait = float(r.headers.get("retry-after", "") or 20)
+                    except ValueError:
+                        wait = 20.0
+                    usage["waited_s"] = round(usage.get("waited_s", 0) + min(65.0, max(1.0, wait)), 1)
+                    _sleep(min(65.0, max(1.0, wait)))
                 r.raise_for_status()
                 data = r.json()
                 u = data.get("usage") or {}
