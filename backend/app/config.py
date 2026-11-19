@@ -10,15 +10,17 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _load_dotenv() -> None:
-    f = ROOT / ".env"
-    if not f.exists():
-        return
-    for line in f.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    # .env, or settings.txt for people editing in Notepad (Windows hides and mangles dot-files)
+    for name in (".env", "settings.txt"):
+        f = ROOT / name
+        if not f.exists():
             continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        for line in f.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 _load_dotenv()
