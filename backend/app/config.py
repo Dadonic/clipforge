@@ -94,3 +94,21 @@ S3_SECRET_KEY = _env("S3_SECRET_KEY")
 S3_REGION = _env("S3_REGION", "auto")
 
 OUT_W, OUT_H = 1080, 1920
+
+# Let phones and tablets on the same Wi-Fi open ClipForge (the start file then listens on the network, not only
+# on this computer). Sign-in is still required. Use on a home network only.
+PHONE_ACCESS = _env("PHONE_ACCESS", "0").lower() in ("1", "true", "yes", "on")
+
+
+def lan_ip() -> str:
+    """This computer's address on the local network, or "" when it has none."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))        # no packet is sent; this only picks the outgoing interface
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = ""
+    finally:
+        s.close()
+    return "" if ip.startswith("127.") else ip

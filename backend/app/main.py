@@ -176,6 +176,8 @@ def system(user: User = Depends(auth.current_user)):
                            "posts or reading view-based earnings). Its Bounties API covers flat-fee bounties only. "
                            "ClipForge therefore tracks campaigns, submissions and earnings from what you enter or import by CSV."},
         "embedded_worker": config.EMBEDDED_WORKER,
+        "phone_access": {"enabled": config.PHONE_ACCESS,
+                         "url": f"http://{config.lan_ip()}:8000" if config.PHONE_ACCESS and config.lan_ip() else None},
     }
 
 

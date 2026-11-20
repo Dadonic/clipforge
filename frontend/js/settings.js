@@ -27,6 +27,12 @@ export function Settings({ user, setUser, sys }) {
           <${Field} label="Clips to make automatically per upload" hint="0 = only rank the moments"><input type="number" min="0" max="30" value=${s.auto_clips} onInput=${up("auto_clips")} /><//>
           <label class="f inline" style="align-self:end;padding-bottom:6px"><input type="checkbox" checked=${s.auto_hook} onChange=${e => setS({ ...s, auto_hook: e.target.checked })} /><span>Write hook text automatically</span></label>
         </div></div>
+      <div class="card col"><h2>Open on your phone</h2>
+        ${sys.phone_access && sys.phone_access.enabled
+          ? (sys.phone_access.url
+            ? html`<p>On a phone connected to the same Wi-Fi, open <b style="user-select:all">${sys.phone_access.url}</b> and sign in. The address can change when the computer reconnects to Wi-Fi.</p>`
+            : html`<p class="muted">Phone access is on, but this computer is not connected to a network.</p>`)
+          : html`<p class="muted">Off. To turn it on, add the line <b>PHONE_ACCESS=1</b> to settings.txt in the program folder and restart ClipForge. Home Wi-Fi only.</p>`}</div>
       <div class="card col"><h2>Account</h2>
         <div class="fields"><${Field} label="Name"><input value=${name} onInput=${e => setName(e.target.value)} /><//><${Field} label="Email"><input value=${user.email} disabled /><//></div>
         <div class="row"><button class="btn primary" onClick=${save}>Save settings</button></div>

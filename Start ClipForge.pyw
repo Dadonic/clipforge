@@ -49,7 +49,11 @@ def main() -> None:
     sys.path.insert(0, backend)
     threading.Thread(target=open_when_ready, daemon=True).start()
     import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000)
+    from app import config
+    host = "0.0.0.0" if config.PHONE_ACCESS else "127.0.0.1"
+    if config.PHONE_ACCESS:
+        print(f"Phone access is on: http://{config.lan_ip() or '<no network>'}:8000")
+    uvicorn.run("app.main:app", host=host, port=8000)
 
 
 if __name__ == "__main__":
