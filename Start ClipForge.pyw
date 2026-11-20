@@ -32,12 +32,14 @@ def open_when_ready() -> None:
 
 
 def main() -> None:
+    quiet = "--no-browser" in sys.argv          # used when Windows starts ClipForge at login
     if running():
-        webbrowser.open(URL)
+        if not quiet:
+            webbrowser.open(URL)
         return
     venv = os.path.join(ROOT, ".venv", "Scripts", "pythonw.exe")
     if os.path.exists(venv) and os.path.normcase(sys.executable) != os.path.normcase(venv):
-        subprocess.Popen([venv, os.path.abspath(__file__)], cwd=ROOT)      # hand over to ClipForge's own Python
+        subprocess.Popen([venv, os.path.abspath(__file__)] + sys.argv[1:], cwd=ROOT)   # hand over to ClipForge's own Python
         return
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     log = open(os.path.join(ROOT, "data", "server.log"), "a", buffering=1, encoding="utf-8")
@@ -47,7 +49,8 @@ def main() -> None:
     backend = os.path.join(ROOT, "backend")
     os.chdir(backend)
     sys.path.insert(0, backend)
-    threading.Thread(target=open_when_ready, daemon=True).start()
+    if not quiet:
+        threading.Thread(target=open_when_ready, daemon=True).start()
     import uvicorn
     from app import config
     host = "0.0.0.0" if config.PHONE_ACCESS else "127.0.0.1"
