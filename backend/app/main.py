@@ -17,9 +17,44 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 _stop = threading.Event()
 
 
+def _file_password_reset() -> None:
+    """Forgotten password on a self-hosted copy: put a file named reset-password.txt in the program folder with
+    the new password on the first line (or "email new-password" when there are several accounts) and restart.
+    Only someone with access to the machine's files can do this. The file is removed after use."""
+    from .db import SessionLocal
+    f = config.ROOT / "reset-password.txt"
+    if not f.exists():
+        return
+    try:
+        parts = f.read_text(encoding="utf-8-sig").strip().splitlines()[0].split()
+    except (OSError, IndexError):
+        parts = []
+    db = SessionLocal()
+    try:
+        users = db.query(User).all()
+        u = None
+        if len(parts) == 2:
+            u = next((x for x in users if x.email == parts[0].lower()), None)
+        elif len(parts) == 1 and len(users) == 1:
+            u = users[0]
+        if u and len(parts[-1]) >= 8:
+            u.password_hash = auth.hash_password(parts[-1])
+            db.commit()
+    finally:
+        db.close()
+    try:
+        f.unlink()
+    except OSError:
+        try:
+            f.write_text("")            # could not delete: at least do not leave the password on disk
+        except OSError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _file_password_reset()
     if config.EMBEDDED_WORKER:
         threading.Thread(target=worker.run_forever, args=(_stop,), daemon=True, name="clipforge-worker").start()
     yield
