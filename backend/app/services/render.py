@@ -115,6 +115,22 @@ def _fesc(path: str) -> str:
     return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
 
+def overlay_spec(layout_params: dict | None) -> dict | None:
+    """A campaign's logo image for this clip: {"path", "x", "y", "w"} in output pixels, or None.
+    x is the centre, y the top edge and w the width, each given as a fraction of the frame."""
+    ov = (layout_params or {}).get("overlay") or {}
+    name = os.path.basename(str(ov.get("file") or ""))
+    if not name:
+        return None
+    path = config.OVERLAY_DIR / name
+    if not path.exists():
+        return None
+    w = int(max(0.1, min(1.0, float(ov.get("w", 0.7)))) * W) // 2 * 2
+    x = int(max(0.0, min(1.0, float(ov.get("x", 0.5)))) * W - w / 2)
+    y = int(max(0.0, min(0.95, float(ov.get("y", 0.03)))) * H)
+    return {"path": str(path), "x": max(0, min(W - w, x)), "y": y, "w": w}
+
+
 def render_clip(src: str, out: str, *, start: float, end: float, src_w: int, src_h: int, src_fps: float,
                 layout: str, layout_params: dict, facecam: dict | None, words: list[dict], caption_style: str,
                 caption_params: dict, watermark: str = "", watermark_pos: str = "top", gain_db: float = 0.0,
@@ -141,8 +157,15 @@ def render_clip(src: str, out: str, *, start: float, end: float, src_w: int, src
         fc.append(f"[{cur}][p{j}]overlay={d['x']}:{d['y']}:shortest=1[o{j}]")
         cur = f"o{j}"
     fps = 30 if not src_fps or src_fps < 40 else 60
-    fc.append(f"[{cur}]ass='{_fesc(ass_path)}':fontsdir='{_fesc(str(config.FONTS_DIR))}',fps={fps},format=yuv420p[vout]")
+    ov = overlay_spec(layout_params)
+    last = "vsub" if ov else "vout"
+    fc.append(f"[{cur}]ass='{_fesc(ass_path)}':fontsdir='{_fesc(str(config.FONTS_DIR))}',fps={fps}"
+              + (f"[{last}]" if ov else f",format=yuv420p[{last}]"))
     args = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", src]
+    if ov:      # drawn last so captions, hook card and end card can never cover a required logo
+        args += ["-i", ov["path"]]
+        fc.append(f"[1:v]scale={ov['w']}:-2:flags=lanczos,format=rgba[logo]")
+        fc.append(f"[vsub][logo]overlay={ov['x']}:{ov['y']}:eof_action=repeat,format=yuv420p[vout]")
     maps = ["-map", "[vout]"]
     if has_audio:
         af = [f"volume={gain_db:.1f}dB"] if abs(gain_db) > 0.05 else []

@@ -73,6 +73,8 @@ def new_clip(db, user: User, v: Video, start: float, end: float, h: Highlight | 
     if not layout:
         layout, lp, cap = default_layout(v)
         cp = {**cap, **cp}
+    if preset.get("overlay"):
+        lp = {**lp, "overlay": dict(preset["overlay"])}
     flags = (list(h.flags or []) if h else []) + offstream_flags(v.id, start, end)
     auto_hook = camp.auto_hook if camp is not None and camp.auto_hook is not None else us.get("auto_hook", True)
     if auto_hook and h and not cp.get("hook_text"):

@@ -72,6 +72,13 @@ export function Campaigns({ sys }) {
   if (error && !data) return html`<${ErrorBox} error=${error} retry=${reload} />`;
   const del = async c => { if (!confirm(`Delete “${c.name}”?`)) return; try { await api(`/campaigns/${c.id}`, { method: "DELETE" }); reload(); } catch (e) { fail(e); } };
   const setStatus = async (c, status) => { try { await api(`/campaigns/${c.id}`, { method: "PATCH", body: { status } }); reload(); } catch (e) { fail(e); } };
+  const logo = async (c, file) => {
+    try {
+      const r = await fetch(`/api/campaigns/${c.id}/overlay`, file ? { method: "POST", body: file, credentials: "same-origin" } : { method: "DELETE", credentials: "same-origin" });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Could not save the logo");
+      reload();
+    } catch (e) { fail(e); }
+  };
   const leads = data.filter(c => c.status === "lead"), rest = data.filter(c => c.status !== "lead");
   const Card = c => html`<div class="card col" key=${c.id}>
     <div class="row wrap"><h2 class="grow trunc">${c.name}</h2><${Status} s=${c.status} /><span class="pill est">${money(c.payout_per_1k)} / 1k views</span></div>
@@ -80,6 +87,9 @@ export function Campaigns({ sys }) {
       ${[["Clips", int(c.stats.clips)], ["Approved views", int(c.stats.approved_views)], ["Estimated", money(c.stats.estimated)], ["Confirmed", money(c.stats.confirmed)]].map(([k, v]) => html`<div><div class="tiny dim">${k}</div><div class="num" style="font-weight:600">${v}</div></div>`)}</div>
       ${c.stats.budget_used_pct != null && html`<div><div class="row tiny dim" style="margin-bottom:3px"><span class="grow">Your estimated share of the ${money(c.max_budget)} budget</span><span class="num">${c.stats.budget_used_pct}%</span></div><${Progress} v=${c.stats.budget_used_pct} /></div>`}`}
     ${c.notes && html`<p class="small muted">${c.notes}</p>`}
+    <div class="row wrap small"><span class="grow">${(c.preset || {}).overlay ? html`<img src=${"/api/overlays/" + c.preset.overlay.file} alt="Campaign logo" style="height:26px;vertical-align:middle;background:#2a2f3d;border-radius:4px;padding:2px 6px" /> <span class="muted">added to every new clip</span>` : html`<span class="muted">No logo overlay. Add one if the campaign requires its logo on every clip.</span>`}</span>
+      <label class="btn sm">${(c.preset || {}).overlay ? "Replace logo" : "Add logo image"}<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onChange=${e => logo(c, e.target.files[0])} /></label>
+      ${(c.preset || {}).overlay && html`<button class="btn sm ghost" onClick=${() => logo(c, null)}>Remove</button>`}</div>
     <div class="row wrap">${c.whop_url && html`<a class="btn sm" href=${c.whop_url} target="_blank" rel="noopener">Open on Whop <${Icon} n="ext" /></a>`}
       <button class="btn sm" onClick=${() => setForm(c)}>Edit rules</button>
       ${c.status === "lead" && html`<button class="btn sm primary" onClick=${() => setStatus(c, "active")}>I joined — mark active</button>`}

@@ -10,6 +10,12 @@ function ensureFont(f) {
 }
 
 /* Draws the same panels + caption cues the renderer will burn in. Canvas is 540x960 (half of 1080x1920). */
+const logoCache = {};
+let logoBox = null;
+function drawLogo(ctx, clip) {
+  const ov = (clip.layout_params || {}).overlay, img = ov && logoCache[ov.file];
+  if (logoBox && img && img.complete && img.naturalWidth) ctx.drawImage(img, logoBox.x, logoBox.y, logoBox.w, logoBox.h);
+}
 function drawFrame(ctx, video, clip, small) {
   const S = 0.5, W = 540, H = 960;
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
@@ -25,6 +31,16 @@ function drawFrame(ctx, video, clip, small) {
   }
   for (const p of lay.panels) ctx.drawImage(video, p.src.x * k, p.src.y * ky, p.src.w * k, p.src.h * ky, p.dst.x * S, p.dst.y * S, p.dst.w * S, p.dst.h * S);
   const cp = clip.caption_resolved, t = video.currentTime - clip.start;
+  const ov = (clip.layout_params || {}).overlay;          // campaign logo: same maths as render.overlay_spec
+  if (ov && ov.file) {
+    let img = logoCache[ov.file];
+    if (!img) { img = logoCache[ov.file] = new Image(); img.src = "/api/overlays/" + encodeURIComponent(ov.file); }
+    if (img.complete && img.naturalWidth) {
+      const w = Math.max(0.1, Math.min(1, ov.w ?? 0.7)) * W, h = w * img.naturalHeight / img.naturalWidth;
+      const x = Math.max(0, Math.min(W - w, (ov.x ?? 0.5) * W - w / 2));
+      logoBox = { x, y: (ov.y ?? 0.03) * H, w, h };
+    } else logoBox = null;
+  } else logoBox = null;
   if (clip.watermark_text) {
     ctx.font = `600 ${22}px "cf-${cp.font}", Inter, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillStyle = "rgba(255,255,255,.65)"; ctx.strokeStyle = "rgba(0,0,0,.55)"; ctx.lineWidth = 2;
@@ -86,6 +102,7 @@ function Preview({ clip, fonts, vref, onTime }) {
       const c = clipRef.current;
       if (!v.paused && v.currentTime >= c.end) { v.pause(); v.currentTime = c.start; }
       drawFrame(ctx, v, c, small.current);
+      drawLogo(ctx, c);                                   // last, like the renderer: nothing may cover it
       if (Math.abs(v.currentTime - last) > 0.05) { last = v.currentTime; setT(last); onTime && onTime(last); }
       raf = requestAnimationFrame(loop);
     };
@@ -251,6 +268,14 @@ export function Studio({ id, sys }) {
         <${Overview} vref=${vref} rect=${cam} tick=${Math.floor(now)} onRect=${r => setLP("facecam", r)} />
         <div class="row wrap">${lp.facecam && html`<button class="btn sm" onClick=${async () => { try { await api(`/videos/${v.id}`, { method: "PATCH", body: { facecam: lp.facecam } }); toast("Saved as the facecam for every clip from this recording"); } catch (e) { fail(e); } }}>Use for all clips from this recording</button>
           <button class="btn sm ghost" onClick=${() => { const n = { ...lp }; delete n.facecam; edit({ layout_params: n }); }}>Reset</button>`}</div></div>`}
+        ${(clip.campaign_overlay || lp.overlay) && html`<div class="card col"><div class="row wrap"><b class="grow">Campaign logo overlay</b>
+          ${lp.overlay
+            ? html`<button class="btn sm ghost" onClick=${() => { const n = { ...lp }; delete n.overlay; edit({ layout_params: n }); }}>Remove from this clip</button>`
+            : html`<button class="btn sm primary" onClick=${() => setLP("overlay", { ...clip.campaign_overlay })}>Add to this clip</button>`}</div>
+          ${lp.overlay && html`<div class="fields">
+            <${Field} label=${"Size " + Math.round((lp.overlay.w ?? 0.7) * 100) + "%"}><input type="range" min="0.2" max="1" step="0.02" value=${lp.overlay.w ?? 0.7} onInput=${e => setLP("overlay", { ...lp.overlay, w: +e.target.value })} /><//>
+            <${Field} label=${"Height on screen " + Math.round((lp.overlay.y ?? 0.03) * 100) + "%"}><input type="range" min="0" max="0.9" step="0.01" value=${lp.overlay.y ?? 0.03} onInput=${e => setLP("overlay", { ...lp.overlay, y: +e.target.value })} /><//></div>`}
+          <p class="small muted">Drawn on top of everything for the whole clip, so captions and cards cannot cover it.</p></div>`}
       ${clip.layout === "custom" && html`<div class="col" style="gap:6px"><h3>Top region</h3><${Overview} vref=${vref} rect=${lp.top || cam} tick=${Math.floor(now)} onRect=${r => setLP("top", r)} />
         <h3>Bottom region</h3><${Overview} vref=${vref} rect=${lp.bottom} tick=${Math.floor(now)} onRect=${r => setLP("bottom", r)} /><p class="hint">Drag on each frame to choose what fills that half.</p></div>`}
       <div class="fields"><${Field} label="Watermark / credit text"><input value=${clip.watermark_text} onInput=${e => edit({ watermark_text: e.target.value }, 600)} placeholder="e.g. @streamer on Kick" /><//>

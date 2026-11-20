@@ -1,13 +1,16 @@
 """Campaigns, submissions, earnings and the command-centre dashboard. Every number is computed from stored rows."""
 import csv
 import io
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from .. import config
 from ..auth import current_user
 from ..db import (Activity, Campaign, Clip, Job, Snapshot, Submission, User, Video, get_db, log_activity, now, to_dict)
 from ..services.compliance import estimated_earnings
@@ -125,6 +128,8 @@ def _apply_campaign(c: Campaign, body: CampaignIn):
         bad = [p for p in data["approved_platforms"] if p not in PLATFORMS]
         if bad:
             raise HTTPException(400, f"Unknown platform: {', '.join(bad)}")
+    if data.get("preset") is not None and (c.preset or {}).get("overlay") and "overlay" not in data["preset"]:
+        data["preset"] = {**data["preset"], "overlay": c.preset["overlay"]}    # the rules form does not carry the logo
     for k, v in data.items():
         setattr(c, k, v)
     if (c.min_duration or 0) > (c.max_duration or 1e9):
@@ -157,6 +162,61 @@ def update_campaign(cid: int, body: CampaignIn, db: Session = Depends(get_db), u
         clip.compliance = None
     db.commit()
     return campaign_out(db, c)
+
+
+@router.post("/campaigns/{cid}/overlay")
+async def set_overlay(cid: int, request: Request, x: float = 0.5, y: float = 0.03, w: float = 0.7,
+                      db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Store the logo image a campaign requires on every clip. Body: the raw PNG/JPEG/WebP file (max 5 MB).
+    Called with an empty body it only moves or resizes the existing logo."""
+    c = own_campaign(db, user, cid)
+    data = await request.body()
+    preset = dict(c.preset or {})
+    cur = dict(preset.get("overlay") or {})
+    if data:
+        if len(data) > 5 * 1024 * 1024:
+            raise HTTPException(400, "The logo image must be under 5 MB")
+        import io
+        from PIL import Image
+        try:
+            im = Image.open(io.BytesIO(data))
+            im.load()
+        except Exception:
+            raise HTTPException(400, "That file is not a readable PNG, JPEG or WebP image")
+        if im.format not in ("PNG", "JPEG", "WEBP"):
+            raise HTTPException(400, "Use a PNG, JPEG or WebP image")
+        name = f"campaign_{c.id}_{int(now().timestamp())}.png"
+        im.convert("RGBA").save(config.OVERLAY_DIR / name, "PNG")
+        cur["file"], cur["aspect"] = name, round(im.width / im.height, 4)
+    elif not cur.get("file"):
+        raise HTTPException(400, "Send the logo image first")
+    cur.update({"x": max(0.0, min(1.0, x)), "y": max(0.0, min(0.95, y)), "w": max(0.1, min(1.0, w))})
+    preset["overlay"] = cur
+    c.preset = preset
+    for clip in db.query(Clip).filter(Clip.campaign_id == cid).all():
+        clip.compliance = None
+    db.commit()
+    return campaign_out(db, c)
+
+
+@router.delete("/campaigns/{cid}/overlay")
+def remove_overlay(cid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    c = own_campaign(db, user, cid)
+    preset = dict(c.preset or {})
+    preset.pop("overlay", None)
+    c.preset = preset
+    for clip in db.query(Clip).filter(Clip.campaign_id == cid).all():
+        clip.compliance = None
+    db.commit()
+    return campaign_out(db, c)
+
+
+@router.get("/overlays/{name}")
+def get_overlay(name: str, user: User = Depends(current_user)):
+    path = config.OVERLAY_DIR / os.path.basename(name)
+    if not path.exists():
+        raise HTTPException(404, "No such overlay")
+    return FileResponse(path, media_type="image/png")
 
 
 @router.delete("/campaigns/{cid}")

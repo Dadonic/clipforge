@@ -77,6 +77,12 @@ def check_clip(clip, video, campaign, campaign_estimated_total: float = 0.0) -> 
         add("cta_card", "Call to action shown on screen", "pass" if ok else "fail",
             "" if ok else f"Put \u201c{want_card}\u201d in the end card or hook text.")
 
+    want_logo = ((getattr(campaign, "preset", None) or {}).get("overlay") or {}).get("file")
+    if want_logo:
+        have = ((clip.layout_params or {}).get("overlay") or {}).get("file")
+        ok = have == want_logo and render.overlay_spec(clip.layout_params) is not None
+        add("overlay", "Campaign logo overlay on the whole clip", "pass" if ok else "fail",
+            "" if ok else "This campaign requires its logo on every clip. Turn the logo overlay on in the Layout tab.")
     if campaign.require_watermark:
         wm = (clip.watermark_text or "").strip()
         want = (campaign.watermark_text or "").strip()

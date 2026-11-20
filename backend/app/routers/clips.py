@@ -36,6 +36,7 @@ def clip_out(db: Session, c: Clip, full: bool = False) -> dict:
     d["video_title"] = v.title if v else ""
     camp = db.get(Campaign, c.campaign_id) if c.campaign_id else None
     d["campaign_name"] = camp.name if camp else None
+    d["campaign_overlay"] = ((camp.preset or {}).get("overlay") if camp else None) or None
     job = db.query(Job).filter(Job.clip_id == c.id, Job.type == "render").order_by(Job.id.desc()).first()
     d["job"] = to_dict(job) if job and job.status in ("queued", "running", "failed") else None
     d["submissions"] = db.query(Submission).filter(Submission.clip_id == c.id).count()

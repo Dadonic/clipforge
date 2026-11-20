@@ -522,3 +522,19 @@ def test_llm_rescore_waits_out_rate_limits(monkeypatch):
     out, usage = semantic.llm_rescore(cands, "Tomo")
     assert sorted(out) == [0, 1, 2, 3, 4] and "error" not in usage
     assert usage["calls"] == 3 and calls["n"] == 4 and calls["slept"] == [7.0] and usage["waited_s"] == 7.0
+
+
+def test_overlay_spec_and_compliance(tmp_path, monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(render.config, "OVERLAY_DIR", tmp_path)
+    assert render.overlay_spec({}) is None
+    assert render.overlay_spec({"overlay": {"file": "missing.png"}}) is None
+    Image.new("RGBA", (300, 100), (255, 0, 0, 255)).save(tmp_path / "logo.png")
+    s = render.overlay_spec({"overlay": {"file": "../../logo.png", "x": 0.5, "y": 0.03, "w": 0.7}})   # basename only
+    assert s and s["w"] == 756 and s["x"] == 162 and s["y"] == 57 and s["path"].endswith("logo.png")
+    edge = render.overlay_spec({"overlay": {"file": "logo.png", "x": 1.0, "y": 0.5, "w": 0.5}})
+    assert edge["x"] + edge["w"] <= 1080
+    # a logo changes the render hash, so adding or moving it forces a new render
+    base = dict(start=0, end=20, layout="blurfit", layout_params={}, facecam=None, words=[], caption_style="pop",
+                caption_params={}, watermark_text="", watermark_pos="top", audio_gain_db=0, normalize_audio=True, quality="standard")
+    assert render.render_hash(base) != render.render_hash({**base, "layout_params": {"overlay": {"file": "logo.png"}}})

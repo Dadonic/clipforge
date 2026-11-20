@@ -34,12 +34,13 @@ DATA_DIR = Path(_env("CLIPFORGE_DATA_DIR", str(ROOT / "data"))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 WORK_DIR = DATA_DIR / "work"        # per-video caches: audio, proxy, transcript, analysis
 CLIP_DIR = DATA_DIR / "clips"       # rendered MP4s
+OVERLAY_DIR = DATA_DIR / "overlays" # logo images a campaign requires on every clip
 FONTS_DIR = Path(_env("CLIPFORGE_FONTS_DIR", str(ROOT / "fonts"))).resolve()
 MODELS_DIR = Path(_env("CLIPFORGE_MODELS_DIR", str(ROOT / "models"))).resolve()
 FRONTEND_DIR = ROOT / "frontend"
 PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
-for d in (DATA_DIR, UPLOAD_DIR, WORK_DIR, CLIP_DIR):
+for d in (DATA_DIR, UPLOAD_DIR, WORK_DIR, CLIP_DIR, OVERLAY_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = _env("DATABASE_URL", f"sqlite:///{DATA_DIR / 'clipforge.db'}")
