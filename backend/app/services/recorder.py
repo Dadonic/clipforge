@@ -15,6 +15,7 @@ Only record streams you are allowed to clip (the campaign's own streamer and foo
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -28,13 +29,16 @@ from urllib.parse import parse_qs, urlparse
 
 from .. import config
 
+log = logging.getLogger("clipforge.recorder")
+
 OBS_DIR = config.ROOT / "tools" / "obs"
 OBS_EXE = OBS_DIR / "bin" / "64bit" / "obs64.exe"
 OBS_CFG = OBS_DIR / "config" / "obs-studio"
 REC_DIR = config.DATA_DIR / "recordings"
 SECRET_FILE = config.DATA_DIR / "obs_ws_secret"
 PORT = int(os.environ.get("OBS_WS_PORT", "4455"))
-CFG_VERSION = "1"
+APP_URL = os.environ.get("CLIPFORGE_LOCAL_URL", "http://localhost:8000")   # serves the player page OBS opens
+CFG_VERSION = "2"
 SCENE_BROWSER, SCENE_EDGE = "Browser", "Edge window"
 BROWSER_SOURCE = "Stream page"
 EDGE_WINDOW = ":Chrome_WidgetWin_1:msedge.exe"
@@ -107,13 +111,14 @@ def ensure_obs_config(force: bool = False) -> None:
                                "RecordWhenStreaming": "false", "ShowTransitions": "false"}}
     for f in ("global.ini", "user.ini"):
         (OBS_CFG / f).write_text(_ini(general), encoding="utf-8")
+    # forward slashes in paths: OBS's ini reader turns "\\r" in "...data\\recordings" into a line break
     profile = {"General": {"Name": "ClipForge"},
                "Video": {"BaseCX": "1920", "BaseCY": "1080", "OutputCX": "1920", "OutputCY": "1080",
                          "FPSType": "0", "FPSCommon": "30", "ScaleType": "bicubic", "ColorFormat": "NV12",
                          "ColorSpace": "709", "ColorRange": "Partial"},
                "Audio": {"SampleRate": "48000", "ChannelSetup": "Stereo"},
                "Output": {"Mode": "Simple"},
-               "SimpleOutput": {"FilePath": str(REC_DIR), "RecFormat2": "hybrid_mp4", "RecQuality": "Small",
+               "SimpleOutput": {"FilePath": REC_DIR.as_posix(), "RecFormat2": "hybrid_mp4", "RecQuality": "Small",
                                 "RecEncoder": "x264", "RecAudioEncoder": "aac", "FileNameWithoutSpace": "true",
                                 "RecRB": "false", "Preset": "veryfast", "ABitrate": "160"}}
     (OBS_CFG / "basic/profiles/ClipForge/basic.ini").write_text(_ini(profile), encoding="utf-8")
@@ -188,19 +193,74 @@ def _connect(wait: float = 0.0) -> _OBS:
             time.sleep(1.0)
 
 
+def _obs_running() -> bool:
+    if os.name != "nt":
+        return False
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq obs64.exe"], capture_output=True).stdout
+    return b"obs64.exe" in out
+
+
+def _kill_obs() -> None:
+    if os.name != "nt":
+        return
+    subprocess.run(["taskkill", "/IM", "obs64.exe", "/T"], capture_output=True)
+    for _ in range(10):                    # a tray-minimised or stuck OBS can ignore the polite close
+        time.sleep(1.0)
+        if not _obs_running():
+            return
+    subprocess.run(["taskkill", "/IM", "obs64.exe", "/T", "/F"], capture_output=True)
+    time.sleep(1.0)
+
+
+def _clear_crash_flag() -> None:
+    """OBS 33 asks "Launch in Safe Mode?" after an unclean exit (ClipForge being stopped kills it too).
+    Nobody is there to answer, and safe mode turns off the websocket, so start it as a clean run."""
+    for _ in range(10):                    # a just-killed OBS may hold the file open for a moment
+        left = []
+        for f in (OBS_CFG / ".sentinel").glob("*"):
+            try:
+                f.unlink()
+            except OSError:
+                left.append(f)
+        if not left:
+            return
+        time.sleep(0.5)
+    log.warning("could not clear OBS crash flag: %s", left)
+
+
 def launch_obs() -> None:
     ensure_obs_config()
     try:
-        _connect().close()
-        return                                   # already running
+        obs = _connect()
     except RecorderError:
-        pass
+        obs = None
+    if obs:                                      # already running (maybe still loading)
+        _wait_ready(obs)
+        return
+    if _obs_running():                           # running but not answering: stuck on a dialog
+        _kill_obs()
+    _clear_crash_flag()
     flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW for the launcher itself
-    subprocess.Popen([str(OBS_EXE), "--portable", "--minimize-to-tray", "--disable-shutdown-check",
-                      "--disable-updater", "--disable-missing-files-check", "--profile", "ClipForge",
+    subprocess.Popen([str(OBS_EXE), "--portable", "--minimize-to-tray", "--disable-updater", "--disable-missing-files-check", "--profile", "ClipForge",
                       "--collection", "ClipForge", "--scene", SCENE_BROWSER],
                      cwd=str(OBS_EXE.parent), creationflags=flags)
-    _connect(wait=45.0).close()
+    _wait_ready(_connect(wait=45.0))
+
+
+def _wait_ready(obs: "_OBS", wait: float = 45.0) -> None:
+    """OBS accepts the websocket before its scenes have loaded; wait until it answers requests."""
+    end = time.time() + wait
+    try:
+        while True:
+            try:
+                obs.call("GetRecordStatus")
+                return
+            except RecorderError as e:
+                if "not ready" not in str(e).lower() or time.time() >= end:
+                    raise
+                time.sleep(1.0)
+    finally:
+        obs.close()
 
 
 # --------------------------------------------------------------------------- URLs
@@ -230,13 +290,27 @@ def start_seconds(url: str) -> int:
 
 
 def player_url(url: str) -> str:
-    """A full-frame player for the page: YouTube links become the embedded player with no controls."""
+    """What OBS opens. YouTube links go through ClipForge's own player page: YouTube refuses an embed
+    opened as a bare page (Error 153), it has to sit inside a page from a real site."""
     vid = youtube_id(url)
     if not vid:
         return url
     s = start_seconds(url)
-    return (f"https://www.youtube.com/embed/{vid}?autoplay=1&controls=0&rel=0&playsinline=1&iv_load_policy=3"
-            f"&disablekb=1&fs=0" + (f"&start={s}" if s else ""))
+    return f"{APP_URL}/recorder/player?v={vid}" + (f"&start={s}" if s else "")
+
+
+def player_page(vid: str, start: int = 0) -> str:
+    """Full-frame YouTube embed, no controls, autoplay (OBS's browser allows sound without a click)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", vid or ""):
+        raise RecorderError("bad video id")
+    src = (f"https://www.youtube.com/embed/{vid}?autoplay=1&controls=0&rel=0&playsinline=1&iv_load_policy=3"
+           f"&disablekb=1&fs=0&modestbranding=1&enablejsapi=1&vq=hd1080&origin={APP_URL}"
+           + (f"&start={int(start)}" if start else ""))
+    return ("<!doctype html><html><head><meta charset=utf-8><meta name=referrer content=strict-origin-when-cross-origin>"
+            "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}"
+            "iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style></head><body>"
+            f'<iframe src="{src}" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin">'
+            "</iframe></body></html>")
 
 
 def embeddable(url: str) -> bool | None:
@@ -256,7 +330,7 @@ def embeddable(url: str) -> bool | None:
 # --------------------------------------------------------------------------- recording control
 def status() -> dict:
     with _lock:
-        st = dict(_state)
+        st = {k: v for k, v in _state.items() if not k.startswith("_")}
     st["available"] = available()
     if st.get("status") == "recording" and st.get("started_at"):
         st["elapsed"] = round(time.time() - st["started_at"], 1)
@@ -285,6 +359,12 @@ def start(url: str, minutes: float, mode: str, on_done) -> dict:
             else:
                 obs.call("SetCurrentProgramScene", {"sceneName": SCENE_EDGE})
             obs.call("StartRecord")
+            for _ in range(8):                     # OBS can accept the request and then refuse to write
+                time.sleep(0.5)
+                if obs.call("GetRecordStatus").get("outputActive"):
+                    break
+            else:
+                raise RecorderError("OBS could not start writing the recording (check the recordings folder)")
         finally:
             obs.close()
     except Exception as e:
@@ -292,12 +372,11 @@ def start(url: str, minutes: float, mode: str, on_done) -> dict:
             _state.update({"status": "error", "error": str(e)[:300]})
         raise
     with _lock:
-        _state.update({"status": "recording", "started_at": time.time()})
+        _state.update({"status": "recording", "started_at": time.time(), "_on_done": on_done})
     if minutes and minutes > 0:
         _timer = threading.Timer(minutes * 60, lambda: _safe_stop(on_done))
         _timer.daemon = True
         _timer.start()
-    _state["_on_done"] = on_done
     return status()
 
 
@@ -322,6 +401,10 @@ def stop(on_done=None) -> dict:
     obs = _connect(wait=5)
     try:
         path = obs.call("StopRecord", timeout=60).get("outputPath")
+        for _ in range(120):                   # StopRecord answers before OBS has finished the file
+            if not obs.call("GetRecordStatus").get("outputActive"):
+                break
+            time.sleep(0.5)
         if obs.call("GetInputSettings", {"inputName": BROWSER_SOURCE}).get("inputSettings", {}).get("url") != "about:blank":
             obs.call("SetInputSettings", {"inputName": BROWSER_SOURCE, "inputSettings": {"url": "about:blank"},
                                           "overlay": True})          # stop the player using bandwidth
@@ -329,7 +412,7 @@ def stop(on_done=None) -> dict:
         obs.close()
     if not path:
         raise RecorderError("OBS did not report where it saved the recording")
-    for _ in range(60):                        # OBS finishes writing the file just after it reports
+    for _ in range(30):                        # then the size settles once the last write lands
         try:
             size = os.path.getsize(path)
             time.sleep(1.0)
@@ -351,18 +434,37 @@ def quit_obs() -> None:
     try:
         obs = _connect()
     except RecorderError:
+        _kill_obs()                              # not answering: nothing ClipForge is recording
         return
     try:
-        if not obs.call("GetRecordStatus").get("outputActive"):
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/IM", "obs64.exe", "/T"], capture_output=True)
+        recording = obs.call("GetRecordStatus").get("outputActive")
+    except RecorderError:
+        recording = False
     finally:
         obs.close()
+    if not recording:
+        _kill_obs()
 
 
 def import_path(path: str) -> Path:
-    """Move a finished recording into ClipForge's uploads folder."""
+    """Move a finished recording into ClipForge's uploads folder. On Windows a rename fails while OBS
+    still has the file open, so keep trying for a while instead of copying a half-written file."""
     src = Path(path)
     dst = config.UPLOAD_DIR / f"{uuid.uuid4().hex}{src.suffix.lower() or '.mp4'}"
-    shutil.move(str(src), dst)
+    for _ in range(120):
+        try:
+            os.replace(src, dst)
+            return dst
+        except PermissionError:
+            time.sleep(1.0)
+        except OSError:
+            break                              # a different drive: fall back to copying
+    shutil.copy2(src, dst)
+    if dst.stat().st_size != src.stat().st_size:
+        dst.unlink(missing_ok=True)
+        raise OSError("the recording was still being written")
+    try:
+        src.unlink()
+    except OSError:
+        pass
     return dst

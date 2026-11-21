@@ -67,6 +67,7 @@ app.include_router(videos.router)
 app.include_router(clips.router)
 app.include_router(business.router)
 app.include_router(recorder.router)
+app.include_router(recorder.player_router)
 
 
 class Creds(BaseModel):

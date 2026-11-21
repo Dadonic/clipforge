@@ -553,7 +553,11 @@ def test_recorder_urls():
     assert recorder.start_seconds("https://youtu.be/x?t=1h2m3s") == 3723
     assert recorder.start_seconds("https://youtu.be/x?t=95") == 95
     u = recorder.player_url("https://www.youtube.com/watch?v=abcdefghijk&t=90")
-    assert u.startswith("https://www.youtube.com/embed/abcdefghijk?autoplay=1") and "controls=0" in u and "start=90" in u
+    assert u == recorder.APP_URL + "/recorder/player?v=abcdefghijk&start=90"
+    page = recorder.player_page("abcdefghijk", 90)
+    assert "youtube.com/embed/abcdefghijk?autoplay=1" in page and "controls=0" in page and "start=90" in page
+    with pytest.raises(recorder.RecorderError):
+        recorder.player_page('x"><script>', 0)
     assert recorder.player_url("https://example.com/stream") == "https://example.com/stream"
 
 
@@ -572,7 +576,7 @@ def test_recorder_writes_obs_config(tmp_path, monkeypatch):
     assert (tmp_path / "obs" / "portable_mode.txt").exists()
     prof = configparser.ConfigParser()
     prof.read(cfg / "basic/profiles/ClipForge/basic.ini")
-    assert prof["SimpleOutput"]["FilePath"] == str(tmp_path / "rec") and prof["Video"]["OutputCX"] == "1920"
+    assert prof["SimpleOutput"]["FilePath"] == (tmp_path / "rec").as_posix() and "\\" not in prof["SimpleOutput"]["FilePath"] and prof["Video"]["OutputCX"] == "1920"
     col = json.loads((cfg / "basic/scenes/ClipForge.json").read_text())
     names = {s["name"]: s for s in col["sources"]}
     assert {recorder.SCENE_BROWSER, recorder.SCENE_EDGE, recorder.BROWSER_SOURCE} <= set(names)

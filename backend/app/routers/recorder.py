@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,18 @@ class StartIn(BaseModel):
     authorized: bool = False
     analyze: bool = True
     auto_clips: int = 5
+
+
+player_router = APIRouter(tags=["recorder"])
+
+
+@player_router.get("/recorder/player", include_in_schema=False)
+def player(v: str, start: int = 0):
+    """The page OBS's browser source opens (no sign-in: it only wraps a public YouTube embed)."""
+    try:
+        return HTMLResponse(recorder.player_page(v, start))
+    except recorder.RecorderError:
+        raise HTTPException(400, "bad video id")
 
 
 @router.get("/status")
