@@ -4,7 +4,7 @@ import json
 
 from .. import config
 from ..db import Campaign, Clip, Highlight, Job, Submission, User, Video
-from . import offstream, semantic
+from . import offstream, semantic, transcription
 
 
 class ClipError(ValueError):
@@ -12,7 +12,7 @@ class ClipError(ValueError):
 
 
 def words_for(video_id: int, start: float, end: float) -> list[dict]:
-    p = config.WORK_DIR / str(video_id) / "transcript.json"
+    p = transcription.active_transcript(config.WORK_DIR / str(video_id))
     if not p.exists():
         return []
     return [w for w in json.loads(p.read_text())["words"] if w["e"] > start and w["s"] < end]

@@ -538,3 +538,68 @@ def test_overlay_spec_and_compliance(tmp_path, monkeypatch):
     base = dict(start=0, end=20, layout="blurfit", layout_params={}, facecam=None, words=[], caption_style="pop",
                 caption_params={}, watermark_text="", watermark_pos="top", audio_gain_db=0, normalize_audio=True, quality="standard")
     assert render.render_hash(base) != render.render_hash({**base, "layout_params": {"overlay": {"file": "logo.png"}}})
+
+
+# ---------------------------------------------------------------- OBS recorder and voice separation
+import json  # noqa: E402
+from app.services import recorder, voice  # noqa: E402
+
+
+def test_recorder_urls():
+    assert recorder.youtube_id("https://www.youtube.com/watch?v=cq7OxWhmgHA&t=10") == "cq7OxWhmgHA"
+    assert recorder.youtube_id("https://youtu.be/cq7OxWhmgHA?si=x") == "cq7OxWhmgHA"
+    assert recorder.youtube_id("https://www.youtube.com/live/cq7OxWhmgHA") == "cq7OxWhmgHA"
+    assert recorder.youtube_id("https://www.twitch.tv/kreekcraft") is None
+    assert recorder.start_seconds("https://youtu.be/x?t=1h2m3s") == 3723
+    assert recorder.start_seconds("https://youtu.be/x?t=95") == 95
+    u = recorder.player_url("https://www.youtube.com/watch?v=abcdefghijk&t=90")
+    assert u.startswith("https://www.youtube.com/embed/abcdefghijk?autoplay=1") and "controls=0" in u and "start=90" in u
+    assert recorder.player_url("https://example.com/stream") == "https://example.com/stream"
+
+
+def test_recorder_writes_obs_config(tmp_path, monkeypatch):
+    import configparser
+    exe = tmp_path / "obs" / "bin" / "64bit" / "obs64.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.setattr(recorder, "OBS_DIR", tmp_path / "obs")
+    monkeypatch.setattr(recorder, "OBS_EXE", exe)
+    monkeypatch.setattr(recorder, "OBS_CFG", tmp_path / "obs" / "config" / "obs-studio")
+    monkeypatch.setattr(recorder, "REC_DIR", tmp_path / "rec")
+    monkeypatch.setattr(recorder, "SECRET_FILE", tmp_path / "secret")
+    recorder.ensure_obs_config()
+    cfg = tmp_path / "obs" / "config" / "obs-studio"
+    assert (tmp_path / "obs" / "portable_mode.txt").exists()
+    prof = configparser.ConfigParser()
+    prof.read(cfg / "basic/profiles/ClipForge/basic.ini")
+    assert prof["SimpleOutput"]["FilePath"] == str(tmp_path / "rec") and prof["Video"]["OutputCX"] == "1920"
+    col = json.loads((cfg / "basic/scenes/ClipForge.json").read_text())
+    names = {s["name"]: s for s in col["sources"]}
+    assert {recorder.SCENE_BROWSER, recorder.SCENE_EDGE, recorder.BROWSER_SOURCE} <= set(names)
+    uuids = {s["uuid"] for s in col["sources"]}
+    for sc in (recorder.SCENE_BROWSER, recorder.SCENE_EDGE):
+        assert all(it["source_uuid"] in uuids for it in names[sc]["settings"]["items"])
+    ws = json.loads((cfg / "plugin_config/obs-websocket/config.json").read_text())
+    assert ws["server_enabled"] and ws["auth_required"] and ws["server_password"] == (tmp_path / "secret").read_text()
+    before = (cfg / "basic/scenes/ClipForge.json").read_text()
+    recorder.ensure_obs_config()            # idempotent: an existing setup is left alone
+    assert (cfg / "basic/scenes/ClipForge.json").read_text() == before
+
+
+def test_voice_stft_round_trip():
+    rng = np.random.default_rng(1)
+    x = (rng.standard_normal((2, 100_000)) * 0.1).astype(np.float32)
+    y = voice._istft(voice._stft(x), x.shape[1])
+    assert float(np.abs(x - y).max()) < 1e-4
+
+
+def test_voice_separate_overlap_add_is_seamless():
+    class Echo:                       # a fake model that returns its input: output must equal the mix
+        def run(self, _, feeds):
+            return [feeds["input"]]
+    sr = voice.SR
+    t = np.arange(int(sr * 14)) / sr
+    mix = np.stack([np.sin(2 * np.pi * 220 * t), np.sin(2 * np.pi * 330 * t)]).astype(np.float32) * 0.3
+    out = voice.separate(mix, Echo()) / voice.COMPENSATE
+    # the model only sees the lowest DIM_F bins (up to ~17.6 kHz), so low tones must come back intact
+    assert float(np.abs(out - mix)[:, sr:-sr].max()) < 2e-3

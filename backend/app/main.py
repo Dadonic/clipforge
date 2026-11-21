@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from . import auth, config, worker
 from .db import User, get_db, init_db
-from .routers import business, clips, videos
+from .routers import business, clips, recorder, videos
 from .services import captions, render, semantic, storage, transcription
+from .services import recorder as recorder_svc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 _stop = threading.Event()
@@ -65,6 +66,7 @@ app = FastAPI(title="ClipForge AI", version="1.0.0", lifespan=lifespan)
 app.include_router(videos.router)
 app.include_router(clips.router)
 app.include_router(business.router)
+app.include_router(recorder.router)
 
 
 class Creds(BaseModel):
@@ -129,7 +131,8 @@ class MePatch(BaseModel):
 
 
 SETTING_KEYS = {"default_layout", "default_caption_style", "default_caption_params", "quality", "watermark",
-                "min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips", "auto_hook"}
+                "min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips", "auto_hook",
+                "voice_isolation"}
 
 
 @app.patch("/api/auth/me")
@@ -176,6 +179,7 @@ def system(user: User = Depends(auth.current_user)):
                            "posts or reading view-based earnings). Its Bounties API covers flat-fee bounties only. "
                            "ClipForge therefore tracks campaigns, submissions and earnings from what you enter or import by CSV."},
         "embedded_worker": config.EMBEDDED_WORKER,
+        "recorder": {"available": recorder_svc.available()},
         "phone_access": {"enabled": config.PHONE_ACCESS,
                          "url": f"http://{config.lan_ip()}:8000" if config.PHONE_ACCESS and config.lan_ip() else None},
     }

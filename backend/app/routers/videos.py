@@ -125,7 +125,7 @@ def complete_upload(vid: int, body: CompleteIn | None = None, db: Session = Depe
     if body and body.analyze:
         us = user.settings or {}
         analyze(vid, AnalyzeIn(min_duration=us.get("min_duration") or 15, max_duration=us.get("max_duration") or 60,
-                               max_highlights=us.get("max_highlights") or 40, use_llm=us.get("use_llm", True),
+                               max_highlights=us.get("max_highlights") or 40, use_llm=us.get("use_llm", True), voice_isolation=bool(us.get("voice_isolation", False)),
                                auto_clips=max(0, min(30, body.auto_clips))), db, user)
         db.refresh(v)
     return video_out(db, v)
@@ -240,6 +240,7 @@ class AnalyzeIn(BaseModel):
     max_highlights: int = 40
     use_llm: bool = True
     auto_clips: int = 0          # after analysis, turn this many top highlights into clips automatically
+    voice_isolation: bool = False  # separate the voice from game audio before transcription (slower, clearer captions)
 
 
 @router.post("/videos/{vid}/analyze")
@@ -315,7 +316,7 @@ def timeline(vid: int, db: Session = Depends(get_db), user: User = Depends(curre
 def transcript(vid: int, start: float = 0, end: float = 1e9, db: Session = Depends(get_db),
                user: User = Depends(current_user)):
     v = own_video(db, user, vid)
-    p = config.WORK_DIR / str(v.id) / "transcript.json"
+    p = transcription.active_transcript(config.WORK_DIR / str(v.id))
     if not p.exists():
         return {"provider": "none", "words": []}
     t = json.loads(p.read_text())

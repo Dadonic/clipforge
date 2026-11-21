@@ -331,3 +331,17 @@ def estimate_cost(duration_s: float) -> dict:
     name = config.TRANSCRIBE_PROVIDER
     usd = duration_s / 60 * config.OPENAI_TRANSCRIBE_PRICE_PER_MIN if name == "openai" else 0.0
     return {"provider": name, "usd": round(usd, 4)}
+
+
+def active_transcript(work_dir) -> "Path":
+    """The transcript the last analysis used (the clean-voice one when voice separation was on)."""
+    from pathlib import Path
+    wd = Path(work_dir)
+    marker = wd / "transcript.active"
+    try:
+        name = marker.read_text().strip()
+        if name and (wd / name).exists():
+            return wd / name
+    except OSError:
+        pass
+    return wd / "transcript.json"

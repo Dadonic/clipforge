@@ -60,12 +60,52 @@ function AddRecording({ campaigns, onDone, user }) {
       ${!f.authorized && html`<span class="hint">Tick the authorisation box to continue.</span>`}</div></div>`;
 }
 
+function RecordStream({ campaigns, user, sys, onDone }) {
+  const us = (user && user.settings) || {};
+  const [f, setF] = useState({ url: "", minutes: 30, mode: "browser", campaign_id: "", auto_clips: us.auto_clips ?? 5, authorized: false });
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [check, setCheck] = useState(null);
+  const up = k => e => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+  const load = async () => { try { setSt(await api("/recorder/status")); } catch (e) { /* server restarting */ } };
+  useEffect(() => { load(); const t = setInterval(load, 3000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    if (f.mode !== "browser" || !/^https?:\/\//.test(f.url)) { setCheck(null); return; }
+    const t = setTimeout(async () => { try { setCheck(await api("/recorder/check", { method: "POST", body: { url: f.url } })); } catch (e) { setCheck(null); } }, 600);
+    return () => clearTimeout(t);
+  }, [f.url, f.mode]);
+  if (!sys || !sys.recorder || !sys.recorder.available) return null;
+  const rec = st && ["starting", "recording", "stopping"].includes(st.status);
+  const start = async () => {
+    setBusy(true);
+    try { setSt(await api("/recorder/start", { method: "POST", body: { ...f, minutes: +f.minutes, auto_clips: +f.auto_clips || 0, campaign_id: f.campaign_id ? +f.campaign_id : null } })); toast("Recording started"); }
+    catch (e) { fail(e); } finally { setBusy(false); load(); }
+  };
+  const stop = async () => { setBusy(true); try { await api("/recorder/stop", { method: "POST" }); toast("Recording saved. It will appear below and start analysing."); setTimeout(onDone, 4000); } catch (e) { fail(e); } finally { setBusy(false); load(); } };
+  const left = st && st.status === "recording" && st.minutes ? Math.max(0, st.minutes * 60 - (st.elapsed || 0)) : null;
+  return html`<div class="card" style="margin-bottom:14px"><div class="row" style="margin-bottom:12px"><h2 class="grow">Record a stream</h2>
+      ${rec ? html`<span class="pill" style="background:#d33;color:#fff">● ${st.status === "recording" ? "Recording " + clock(st.elapsed || 0) : st.status}</span>` : st && st.last_file ? html`<span class="small muted">Last recording saved</span>` : ""}</div>
+    ${rec ? html`<p class="small">${st.mode === "browser" ? "OBS is playing and recording the stream in the background. Nothing on your screen is captured." : "OBS is recording the Edge window. Keep the stream full screen in Edge."}
+        ${left != null ? html` Stops by itself in ${clock(left)}.` : ""} When it stops, the recording is added below${st.status === "recording" ? " and analysed automatically" : ""}.</p>
+        <div class="row"><button class="btn danger" disabled=${busy || st.status !== "recording"} onClick=${stop}>Stop and save now</button></div>`
+    : html`<div class="fields">
+      <${Field} label="What to record"><select value=${f.mode} onChange=${up("mode")}><option value="browser">A link (OBS plays it, recommended)</option><option value="edge">My Edge window (stream open full screen)</option></select><//>
+      ${f.mode === "browser" && html`<${Field} wide label="Stream or video link" hint=${check && check.embeddable === false ? "This video can't be played outside YouTube. Open it in Edge, press F, and choose “My Edge window”." : check && check.youtube_id ? "YouTube link: OBS will play it full frame without the player controls. Add &t=1h20m to start a replay at a point." : "A YouTube live or replay link works best."}><input placeholder="https://www.youtube.com/watch?v=…" value=${f.url} onInput=${up("url")} /><//>`}
+      <${Field} label="Minutes to record"><input type="number" min="1" max="240" value=${f.minutes} onInput=${up("minutes")} /><//>
+      <${Field} label="Campaign"><select value=${f.campaign_id} onChange=${up("campaign_id")}><option value="">None</option>${campaigns.map(c => html`<option value=${c.id}>${c.name}</option>`)}</select><//>
+      <${Field} label="Clips to make when done"><input type="number" min="0" max="30" value=${f.auto_clips} onInput=${up("auto_clips")} /><//>
+      <label class="f inline wide"><input type="checkbox" checked=${f.authorized} onChange=${up("authorized")} /><span>I'm allowed to clip this stream (it belongs to the campaign's streamer).</span></label></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" disabled=${busy || !f.authorized || (f.mode === "browser" && !f.url) || (check && check.embeddable === false)} onClick=${start}>${busy ? "Starting OBS…" : "Start recording"}</button>
+        ${st && st.status === "error" && html`<span class="hint" style="color:var(--bad,#e66)">${st.error}</span>`}</div>`}</div>`;
+}
+
 export function Library({ user }) {
-  const { data, error, loading, reload } = useLoad(() => Promise.all([api("/videos"), api("/campaigns")]), [], 4000);
+  const { data, error, loading, reload } = useLoad(() => Promise.all([api("/videos"), api("/campaigns"), api("/system")]), [], 4000);
   if (loading && !data) return html`<${Loading} />`;
   if (error && !data) return html`<${ErrorBox} error=${error} retry=${reload} />`;
-  const [videos, campaigns] = data;
+  const [videos, campaigns, sys] = data;
   return html`<div class="head"><div class="grow"><h1>Recordings</h1><p>Upload a stream, run the analysis, then cut the moments it ranks highest.</p></div></div>
+    <${RecordStream} campaigns=${campaigns} user=${user} sys=${sys} onDone=${reload} />
     <${AddRecording} campaigns=${campaigns} user=${user} onDone=${v => v.status === "uploaded" || v.status === "analyzing" ? nav("/video/" + v.id) : reload()} />
     <div class="card flush">${videos.length ? videos.map(v => html`<div class="item click" onClick=${() => nav("/video/" + v.id)}>
         <div class="grow"><div class="row"><b class="trunc">${v.title}</b><${Status} s=${v.status} /></div>
@@ -121,7 +161,7 @@ function HighlightCard({ h, cats, onPreview, onClip, onDismiss, busy }) {
 export function VideoDetail({ id, sys, user }) {
   const { data, error, loading, reload } = useLoad(() => Promise.all([api(`/videos/${id}`), api(`/videos/${id}/highlights`), api("/campaigns")]), [id], 3000);
   const us = user.settings || {};
-  const [opt, setOpt] = useState({ min_duration: us.min_duration || 15, max_duration: us.max_duration || 60, max_highlights: us.max_highlights || 40, use_llm: us.use_llm !== false });
+  const [opt, setOpt] = useState({ min_duration: us.min_duration || 15, max_duration: us.max_duration || 60, max_highlights: us.max_highlights || 40, use_llm: us.use_llm !== false, voice_isolation: !!us.voice_isolation });
   const [busy, setBusy] = useState(false);
   const [t, setT] = useState(0);
   const [mark, setMark] = useState({ a: null, b: null });
@@ -172,6 +212,7 @@ export function VideoDetail({ id, sys, user }) {
         <${Field} label="Longest clip (s)"><input type="number" min="5" max="180" value=${opt.max_duration} onInput=${num("max_duration")} /><//>
         <${Field} label="Max highlights"><input type="number" min="1" max="100" value=${opt.max_highlights} onInput=${num("max_highlights")} /><//>
         <label class="f inline" style="align-self:end;padding-bottom:6px"><input type="checkbox" checked=${opt.use_llm && sys && sys.semantic.llm_configured} disabled=${!sys || !sys.semantic.llm_configured} onChange=${e => setOpt({ ...opt, use_llm: e.target.checked })} /><span>LLM re-rank</span></label>
+        <label class="f inline" style="align-self:end;padding-bottom:6px" title="Separates the streamer's voice from game sound before transcription. Clearer captions on loud gameplay; adds roughly the recording's length to the analysis time."><input type="checkbox" checked=${opt.voice_isolation} onChange=${e => setOpt({ ...opt, voice_isolation: e.target.checked })} /><span>Clean voice (slower)</span></label>
       </div>
       <button class="btn primary" disabled=${busy || working || v.status === "uploading"} onClick=${run}>${v.status === "ready" ? "Re-run analysis" : "Analyse recording"}</button>
       <div class="hint">Speech: ${v.transcribe_provider || (tp ? tp.name + " (local, free)" : "no provider available")} · Ranking: ${v.semantic_provider || (sys && sys.semantic.llm_configured ? "LLM + signals" : "signal scoring (no LLM key set)")}

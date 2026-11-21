@@ -15,7 +15,8 @@ from sqlalchemy import update
 
 from . import config
 from .db import Clip, Highlight, Job, SessionLocal, Video, init_db, log_activity, now
-from .services import audio_analysis, chat, compliance, facecam, highlights, media, offstream, render, semantic, storage, transcription
+from .services import (audio_analysis, chat, compliance, facecam, highlights, media, offstream, render, semantic, storage,
+                       transcription, voice)
 
 log = logging.getLogger("clipforge.worker")
 
@@ -86,7 +87,20 @@ def run_analyze(job: Job, rep: Reporter) -> None:
 
     words, tr = [], {"provider": "none", "word_timing": "none", "words": []}
     if has_audio:
-        tr = transcription.transcribe(str(wav), str(wd / "transcript.json"), rep.span(0.30, 0.72, "Transcribing speech"))
+        speech_wav, tr_cache, tr_span = wav, wd / "transcript.json", (0.30, 0.72)
+        if settings.get("voice_isolation"):
+            # transcribe the streamer's voice on its own; the game audio under it makes the speech model mishear
+            vwav = wd / "voice.wav"
+            try:
+                if not vwav.exists():
+                    tmp = wd / "voice.tmp.wav"
+                    voice.isolate_voice(src, str(tmp), dur, rep.span(0.30, 0.52, "Separating voice from game audio"))
+                    tmp.replace(vwav)
+                speech_wav, tr_cache, tr_span = vwav, wd / "transcript_voice.json", (0.52, 0.72)
+            except Exception as e:  # never lose the analysis over the optional step
+                log.warning("voice separation failed, using the original audio: %s", e)
+        tr = transcription.transcribe(str(speech_wav), str(tr_cache), rep.span(*tr_span, "Transcribing speech"))
+        (wd / "transcript.active").write_text(tr_cache.name)
         words = tr["words"]
         if tr["provider"] == "openai":
             cost["transcription_usd"] = round(dur / 60 * config.OPENAI_TRANSCRIBE_PRICE_PER_MIN, 4)
@@ -157,7 +171,8 @@ def run_analyze(job: Job, rep: Reporter) -> None:
         v.semantic_provider = meta["semantic"]
         v.cost = cost
         v.has_chat = bool(chat_sig)
-        v.analysis_settings = {k: settings.get(k) for k in ("min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips")}
+        v.analysis_settings = {k: settings.get(k) for k in ("min_duration", "max_duration", "max_highlights", "use_llm", "auto_clips",
+                                                             "voice_isolation")}
         if tr.get("warning"):
             v.error = "No transcription provider available: " + tr["warning"]
         if cam and v.facecam_source != "manual":
