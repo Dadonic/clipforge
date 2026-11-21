@@ -118,7 +118,7 @@ def ensure_obs_config(force: bool = False) -> None:
                          "ColorSpace": "709", "ColorRange": "Partial"},
                "Audio": {"SampleRate": "48000", "ChannelSetup": "Stereo"},
                "Output": {"Mode": "Simple"},
-               "SimpleOutput": {"FilePath": REC_DIR.as_posix(), "RecFormat2": "hybrid_mp4", "RecQuality": "Small",
+               "SimpleOutput": {"FilePath": REC_DIR.as_posix(), "RecFormat2": "hybrid_mp4", "RecQuality": "HQ",
                                 "RecEncoder": "x264", "RecAudioEncoder": "aac", "FileNameWithoutSpace": "true",
                                 "RecRB": "false", "Preset": "veryfast", "ABitrate": "160"}}
     (OBS_CFG / "basic/profiles/ClipForge/basic.ini").write_text(_ini(profile), encoding="utf-8")
