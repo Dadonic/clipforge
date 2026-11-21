@@ -300,17 +300,29 @@ def player_url(url: str) -> str:
 
 
 def player_page(vid: str, start: int = 0) -> str:
-    """Full-frame YouTube embed, no controls, autoplay (OBS's browser allows sound without a click)."""
+    """Full-frame YouTube player for OBS: autoplay with sound (OBS's browser allows it), no controls,
+    YouTube's own captions switched off (ClipForge adds its own), quality pushed to HD, and resumed
+    if it ever pauses or stalls."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", vid or ""):
         raise RecorderError("bad video id")
-    src = (f"https://www.youtube.com/embed/{vid}?autoplay=1&controls=0&rel=0&playsinline=1&iv_load_policy=3"
-           f"&disablekb=1&fs=0&modestbranding=1&enablejsapi=1&vq=hd1080&origin={APP_URL}"
-           + (f"&start={int(start)}" if start else ""))
-    return ("<!doctype html><html><head><meta charset=utf-8><meta name=referrer content=strict-origin-when-cross-origin>"
-            "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}"
-            "iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style></head><body>"
-            f'<iframe src="{src}" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin">'
-            "</iframe></body></html>")
+    cfg = json.dumps({"videoId": vid, "start": max(0, int(start or 0)), "origin": APP_URL})
+    return ("<!doctype html><html><head><meta charset=utf-8>"
+            "<meta name=referrer content=strict-origin-when-cross-origin>"
+            "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}"
+            "#p,iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style></head><body><div id=p></div>"
+            "<script>const C=" + cfg + ";"
+            "function noCaps(p){try{p.unloadModule('captions');p.unloadModule('cc');"
+            "p.setOption('captions','track',{});}catch(e){}}"
+            "function onYouTubeIframeAPIReady(){const p=new YT.Player('p',{videoId:C.videoId,width:'100%',height:'100%',"
+            "playerVars:{autoplay:1,controls:0,rel:0,playsinline:1,iv_load_policy:3,disablekb:1,fs:0,"
+            "cc_load_policy:0,start:C.start,origin:C.origin},"
+            "events:{onReady:e=>{noCaps(e.target);e.target.unMute();e.target.setVolume(100);"
+            "e.target.setPlaybackQuality('hd1080');e.target.playVideo();},"
+            "onApiChange:e=>noCaps(e.target),"
+            "onStateChange:e=>{noCaps(e.target);if(e.data===YT.PlayerState.PAUSED||e.data===YT.PlayerState.CUED)"
+            "setTimeout(()=>e.target.playVideo(),500);}}});"
+            "setInterval(()=>{try{noCaps(p);if(p.getPlayerState()===2)p.playVideo();}catch(e){}},5000);}"
+            "</script><script src='https://www.youtube.com/iframe_api'></script></body></html>")
 
 
 def embeddable(url: str) -> bool | None:

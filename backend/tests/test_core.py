@@ -555,7 +555,8 @@ def test_recorder_urls():
     u = recorder.player_url("https://www.youtube.com/watch?v=abcdefghijk&t=90")
     assert u == recorder.APP_URL + "/recorder/player?v=abcdefghijk&start=90"
     page = recorder.player_page("abcdefghijk", 90)
-    assert "youtube.com/embed/abcdefghijk?autoplay=1" in page and "controls=0" in page and "start=90" in page
+    assert '"videoId": "abcdefghijk"' in page and '"start": 90' in page and "controls:0" in page
+    assert "cc_load_policy:0" in page and "unloadModule('captions')" in page
     with pytest.raises(recorder.RecorderError):
         recorder.player_page('x"><script>', 0)
     assert recorder.player_url("https://example.com/stream") == "https://example.com/stream"
